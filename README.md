@@ -1,4 +1,4 @@
-# StarTap Image Shrinking Tool
+# StarTap Image Shrinking Tool（WeChat）
 
 中文介绍
 
