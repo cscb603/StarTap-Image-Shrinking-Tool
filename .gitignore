@@ -1,0 +1,13 @@
+target/
+**/*.app
+*.jpg
+*.png
+*.ico
+*.icns
+*.manifest
+*.rc
+Cargo.lock
+# 排除备份和临时文件
+*.bak
+*.tmp
+.DS_Store
