@@ -9,8 +9,8 @@
 
 ## 📸 界面预览 (GUI Preview)
 
-![macOS 3.2.0 界面](rust版高清缩图界面mac版界面.jpg)
-![Windows 界面演示](rust版高清缩图界面1.jpg)
+![v3.2.0 主界面](星TAP%20高清缩图RUST3.2界面截图%201.png)
+![自定义参数设置](星TAP%20高清缩图RUST3.2界面截图%202.png)
 
 ---
 
