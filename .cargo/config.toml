@@ -1,0 +1,16 @@
+# Windows Static Linking Configuration
+# CRITICAL: Ensures the .exe is portable and doesn't require MSVC Redistributable DLLs.
+# This solves the "won't open on other computers" issue.
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# For GNU toolchain (MinGW)
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-args=-static"]
