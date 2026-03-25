@@ -3,6 +3,34 @@
 [![GitHub release](https://img.shields.io/github/v/release/cscb603/StarTap-Image-Shrinking-Tool?include_prereleases)](https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)](https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases)
 
+---
+
+## ✨ 小白看这里（一句话讲明白）
+
+**之前发朋友圈，图片传上去被微信压得模糊不清？这个工具帮你先压缩好，微信就不会再压了，画质清晰体积小！**
+
+- 🚀 **拖进去就能用**：不用安装，双击打开，图片一拖，点一下就搞定
+- 📱 **微信朋友圈神器**：自动压到 900KB，传上去不被二次压缩
+- 🎯 **三种模式任你选**：微信优化/高清无损/自定义，总有一款适合你
+- 🖱️ **右键一键压缩**：多选图片右键发送到，批量处理超方便
+- 🤖 **AI 也能用**：提供标准 JSON 接口，开发者可以轻松集成
+
+---
+
+## ✨ Geeks Read This (English Summary)
+
+StarTap Image Shrinking Tool is a professional image compression utility built with **industrial-grade Rust**, designed specifically for social media optimization.
+
+- **Zero-Crash Reliability**: Built with Rust, zero `.unwrap()`, passes `cargo clippy -- -D warnings`
+- **Multiple Format Support**: JPEG, PNG, WebP, ICO with perfect transparency handling
+- **LANCZOS Super-Resolution**: Advanced scaling algorithm maintains sharpness
+- **Full CLI & JSON API**: Professional command-line interface and AI integration support
+- **Right-Click SendTo**: Windows batch processing via SendTo menu
+- **Custom Export Directory**: Flexible output location selection
+- **PNG Optimization**: Best compression level with adaptive filter for maximum shrinkage
+
+---
+
 **专为微信、朋友圈及网络发图打造的宝藏级缩图工具！**
 
 精准攻克图片在微信发送、朋友圈发布时被二次压缩的难题，让图片 “体积小” 与 “清晰度高” 兼得，真正实现 “小而美”。
