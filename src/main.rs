@@ -12,8 +12,10 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rust_image_compressor::{app_config_to_process_config, AppConfig, OutputFormat, ProcessMode, Processor};
 use cli::{Cli, FileResult, JsonInput, JsonOutput};
+use rust_image_compressor::{
+    app_config_to_process_config, AppConfig, OutputFormat, ProcessMode, Processor,
+};
 
 fn get_config_file_path() -> Result<PathBuf> {
     if let Some(mut path) = dirs::config_dir() {
@@ -90,9 +92,10 @@ impl ImageCompressorApp {
 
         for path in font_paths {
             if let Ok(data) = fs::read(path) {
-                fonts
-                    .font_data
-                    .insert("custom_font".to_owned(), egui::FontData::from_owned(data));
+                fonts.font_data.insert(
+                    "custom_font".to_owned(),
+                    egui::FontData::from_owned(data).into(),
+                );
                 fonts
                     .families
                     .entry(egui::FontFamily::Proportional)
@@ -113,20 +116,20 @@ impl ImageCompressorApp {
         visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(248, 250, 252);
         visuals.widgets.noninteractive.fg_stroke =
             egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59));
-        visuals.widgets.noninteractive.rounding = 8.0.into();
+        visuals.widgets.noninteractive.corner_radius = 8.0.into();
 
         visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(255, 255, 255);
-        visuals.widgets.inactive.rounding = 8.0.into();
+        visuals.widgets.inactive.corner_radius = 8.0.into();
 
         visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(239, 246, 255);
-        visuals.widgets.hovered.rounding = 8.0.into();
+        visuals.widgets.hovered.corner_radius = 8.0.into();
 
         visuals.widgets.active.bg_fill = egui::Color32::from_rgb(219, 234, 254);
-        visuals.widgets.active.rounding = 8.0.into();
+        visuals.widgets.active.corner_radius = 8.0.into();
 
         visuals.selection.bg_fill = egui::Color32::from_rgb(37, 99, 235);
         visuals.window_fill = egui::Color32::from_rgb(248, 250, 252);
-        visuals.window_rounding = 12.0.into();
+        visuals.window_corner_radius = 12.0.into();
 
         cc.egui_ctx.set_visuals(visuals);
 
@@ -140,7 +143,7 @@ impl ImageCompressorApp {
             show_about: false,
             show_advanced: false,
             custom_output_dir: None,
-            about_version: "v4.0.0".to_string(),
+            about_version: "v4.0.1".to_string(),
             tx,
             rx,
         }
@@ -217,7 +220,10 @@ impl ImageCompressorApp {
                 if is_success {
                     success += 1;
                 }
-                let _ = tx.send(AppEvent::ProcessingProgress(i, if is_success { 1 } else { 0 }));
+                let _ = tx.send(AppEvent::ProcessingProgress(
+                    i,
+                    if is_success { 1 } else { 0 },
+                ));
             }
 
             let _ = tx.send(AppEvent::ProcessingFinished(processed, success));
@@ -262,10 +268,8 @@ impl eframe::App for ImageCompressorApp {
         if !self.processing {
             let files_dropped = ctx.input(|i| i.raw.dropped_files.clone());
             if !files_dropped.is_empty() {
-                let paths: Vec<PathBuf> = files_dropped
-                    .into_iter()
-                    .filter_map(|f| f.path)
-                    .collect();
+                let paths: Vec<PathBuf> =
+                    files_dropped.into_iter().filter_map(|f| f.path).collect();
                 self.add_files(paths);
                 self.start_processing();
             }
@@ -273,8 +277,8 @@ impl eframe::App for ImageCompressorApp {
 
         egui::TopBottomPanel::top("header_panel")
             .frame(
-                egui::Frame::none()
-                    .inner_margin(egui::Margin::symmetric(20.0, 15.0))
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::symmetric(20, 15))
                     .fill(egui::Color32::from_rgb(255, 255, 255)),
             )
             .show(ctx, |ui| {
@@ -301,8 +305,8 @@ impl eframe::App for ImageCompressorApp {
 
         egui::TopBottomPanel::bottom("status_panel")
             .frame(
-                egui::Frame::none()
-                    .inner_margin(egui::Margin::symmetric(20.0, 15.0))
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::symmetric(20, 15))
                     .fill(egui::Color32::from_rgb(255, 255, 255))
                     .stroke(egui::Stroke::new(
                         1.0,
@@ -314,35 +318,48 @@ impl eframe::App for ImageCompressorApp {
                     if self.processing {
                         ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new(format!("正在处理 {} 个文件...", self.processed_count))
-                                    .size(13.0)
-                                    .strong()
-                                    .color(egui::Color32::from_rgb(37, 99, 235)),
+                                egui::RichText::new(format!(
+                                    "正在处理 {} 个文件...",
+                                    self.processed_count
+                                ))
+                                .size(13.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(37, 99, 235)),
                             );
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.label(
-                                        egui::RichText::new(format!("{:.0}%", (self.processed_count as f32 / self.files.len() as f32 * 100.0)))
-                                            .size(13.0)
-                                            .strong()
-                                            .color(egui::Color32::from_rgb(30, 41, 59)),
+                                        egui::RichText::new(format!(
+                                            "{:.0}%",
+                                            (self.processed_count as f32 / self.files.len() as f32
+                                                * 100.0)
+                                        ))
+                                        .size(13.0)
+                                        .strong()
+                                        .color(egui::Color32::from_rgb(30, 41, 59)),
                                     );
                                 },
                             );
                         });
                         ui.add_space(6.0);
-                        let pb = egui::ProgressBar::new(self.processed_count as f32 / self.files.len() as f32)
-                            .animate(true)
-                            .rounding(4.0)
-                            .fill(egui::Color32::from_rgb(37, 99, 235));
+                        let pb = egui::ProgressBar::new(
+                            self.processed_count as f32 / self.files.len() as f32,
+                        )
+                        .animate(true)
+                        .corner_radius(4.0)
+                        .fill(egui::Color32::from_rgb(37, 99, 235));
                         ui.add(pb);
                     } else {
                         ui.label(
-                            egui::RichText::new(format!("✨ 准备就绪，待处理 {} 个文件 | 成功 {} 个", self.files.len(), self.success_count))
-                                .size(14.0)
-                                .strong()
-                                .color(egui::Color32::from_rgb(71, 85, 105)),
+                            egui::RichText::new(format!(
+                                "✨ 准备就绪，待处理 {} 个文件 | 成功 {} 个",
+                                self.files.len(),
+                                self.success_count
+                            ))
+                            .size(14.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(71, 85, 105)),
                         );
                     }
                     ui.add_space(10.0);
@@ -356,21 +373,21 @@ impl eframe::App for ImageCompressorApp {
 
         egui::CentralPanel::default()
             .frame(
-                egui::Frame::none()
-                    .inner_margin(egui::Margin::symmetric(20.0, 10.0))
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::symmetric(20, 10))
                     .fill(egui::Color32::from_rgb(248, 250, 252)),
             )
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_space(5.0);
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(egui::Color32::WHITE)
-                        .rounding(12.0)
+                        .corner_radius(12.0)
                         .stroke(egui::Stroke::new(
                             1.0,
                             egui::Color32::from_rgb(226, 232, 240),
                         ))
-                        .inner_margin(egui::Margin::same(15.0))
+                        .inner_margin(egui::Margin::same(15))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.vertical(|ui| {
@@ -420,11 +437,23 @@ impl eframe::App for ImageCompressorApp {
                                 });
                                 ui.add_space(10.0);
                                 ui.horizontal(|ui| {
-                                    ui.radio_value(&mut self.config.mode, ProcessMode::WeChat, "微信优化 (900KB)");
+                                    ui.radio_value(
+                                        &mut self.config.mode,
+                                        ProcessMode::WeChat,
+                                        "微信优化 (900KB)",
+                                    );
                                     ui.add_space(15.0);
-                                    ui.radio_value(&mut self.config.mode, ProcessMode::HD, "高清无损 (5MB)");
+                                    ui.radio_value(
+                                        &mut self.config.mode,
+                                        ProcessMode::HD,
+                                        "高清无损 (5MB)",
+                                    );
                                     ui.add_space(15.0);
-                                    ui.radio_value(&mut self.config.mode, ProcessMode::Custom, "自定义模式");
+                                    ui.radio_value(
+                                        &mut self.config.mode,
+                                        ProcessMode::Custom,
+                                        "自定义模式",
+                                    );
                                 });
 
                                 ui.add_space(8.0);
@@ -455,14 +484,14 @@ impl eframe::App for ImageCompressorApp {
 
                     if self.show_advanced {
                         ui.add_space(8.0);
-                        egui::Frame::none()
+                        egui::Frame::NONE
                             .fill(egui::Color32::WHITE)
-                            .rounding(12.0)
+                            .corner_radius(12.0)
                             .stroke(egui::Stroke::new(
                                 1.0,
                                 egui::Color32::from_rgb(226, 232, 240),
                             ))
-                            .inner_margin(egui::Margin::same(15.0))
+                            .inner_margin(egui::Margin::same(15))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.vertical(|ui| {
@@ -475,10 +504,12 @@ impl eframe::App for ImageCompressorApp {
                                                     .color(egui::Color32::from_rgb(71, 85, 105)),
                                             );
                                             ui.add(
-                                                egui::DragValue::new(&mut self.config.custom_max_dim)
-                                                    .clamp_range(100..=10000)
-                                                    .speed(10.0)
-                                                    .suffix(" px"),
+                                                egui::DragValue::new(
+                                                    &mut self.config.custom_max_dim,
+                                                )
+                                                .range(100..=10000)
+                                                .speed(10.0)
+                                                .suffix(" px"),
                                             );
                                             ui.end_row();
 
@@ -486,7 +517,10 @@ impl eframe::App for ImageCompressorApp {
                                                 egui::RichText::new("压缩质量 (1-100):")
                                                     .color(egui::Color32::from_rgb(71, 85, 105)),
                                             );
-                                            ui.add(egui::Slider::new(&mut self.config.custom_quality, 1..=100));
+                                            ui.add(egui::Slider::new(
+                                                &mut self.config.custom_quality,
+                                                1..=100,
+                                            ));
                                             ui.end_row();
 
                                             ui.label(
@@ -495,10 +529,12 @@ impl eframe::App for ImageCompressorApp {
                                             );
                                             ui.horizontal(|ui| {
                                                 ui.add(
-                                                    egui::DragValue::new(&mut self.config.custom_target_kb)
-                                                        .clamp_range(0..=50000)
-                                                        .speed(10.0)
-                                                        .suffix(" KB"),
+                                                    egui::DragValue::new(
+                                                        &mut self.config.custom_target_kb,
+                                                    )
+                                                    .range(0..=50000)
+                                                    .speed(10.0)
+                                                    .suffix(" KB"),
                                                 );
                                                 ui.label(
                                                     egui::RichText::new("(0 为不限制)")
@@ -537,7 +573,9 @@ impl eframe::App for ImageCompressorApp {
                                                     self.custom_output_dir = None;
                                                 }
                                                 if ui.button("更改").clicked() {
-                                                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                                                    if let Some(path) =
+                                                        rfd::FileDialog::new().pick_folder()
+                                                    {
                                                         self.custom_output_dir = Some(path);
                                                     }
                                                 }
@@ -551,8 +589,16 @@ impl eframe::App for ImageCompressorApp {
                                             egui::RichText::new("导出格式:")
                                                 .color(egui::Color32::from_rgb(71, 85, 105)),
                                         );
-                                        ui.radio_value(&mut self.config.output_format, OutputFormat::Jpeg, "JPG (默认)");
-                                        ui.radio_value(&mut self.config.output_format, OutputFormat::KeepOriginal, "保持原始 (仅 PNG)");
+                                        ui.radio_value(
+                                            &mut self.config.output_format,
+                                            OutputFormat::Jpeg,
+                                            "JPG (默认)",
+                                        );
+                                        ui.radio_value(
+                                            &mut self.config.output_format,
+                                            OutputFormat::KeepOriginal,
+                                            "保持原始 (仅 PNG)",
+                                        );
                                     });
                                 });
                             });
@@ -566,7 +612,9 @@ impl eframe::App for ImageCompressorApp {
                         egui::Sense::click(),
                     );
 
-                    let is_hovering = (ctx.input(|i| !i.raw.hovered_files.is_empty()) || response.hovered()) && !self.processing;
+                    let is_hovering = (ctx.input(|i| !i.raw.hovered_files.is_empty())
+                        || response.hovered())
+                        && !self.processing;
 
                     let bg_color = if is_hovering {
                         egui::Color32::from_rgb(239, 246, 255)
@@ -582,12 +630,13 @@ impl eframe::App for ImageCompressorApp {
 
                     ui.painter().rect(
                         rect,
-                        16.0,
+                        egui::CornerRadius::same(16),
                         bg_color,
                         egui::Stroke::new(stroke_width, stroke_color),
+                        egui::StrokeKind::Inside,
                     );
 
-                    ui.allocate_ui_at_rect(rect, |ui| {
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
                         ui.vertical_centered(|ui| {
                             ui.add_space(40.0);
                             ui.label(egui::RichText::new("📥").size(40.0));
@@ -615,33 +664,40 @@ impl eframe::App for ImageCompressorApp {
                                                 .color(egui::Color32::WHITE),
                                         )
                                         .fill(egui::Color32::from_rgb(37, 99, 235))
-                                        .rounding(6.0),
+                                        .corner_radius(6.0),
                                     )
                                     .clicked()
-                                 {
-                                     if let Some(paths) = rfd::FileDialog::new()
-                                         .add_filter(
-                                             "图片文件",
-                                             &["jpg", "jpeg", "png", "webp", "bmp", "dng", "cr2", "cr3", "nef", "arw", "orf", "raf", "rw2", "pef", "srw"],
-                                         )
-                                         .pick_files()
-                                     {
-                                         self.add_files(paths);
-                                         self.start_processing();
-                                     }
-                                 }
+                                {
+                                    if let Some(paths) = rfd::FileDialog::new()
+                                        .add_filter(
+                                            "图片文件",
+                                            &[
+                                                "jpg", "jpeg", "png", "webp", "bmp", "dng", "cr2",
+                                                "cr3", "nef", "arw", "orf", "raf", "rw2", "pef",
+                                                "srw",
+                                            ],
+                                        )
+                                        .pick_files()
+                                    {
+                                        self.add_files(paths);
+                                        self.start_processing();
+                                    }
+                                }
                             });
                         });
                     });
 
                     if response.clicked() && !self.processing {
-                         if let Some(paths) = rfd::FileDialog::new().pick_files() {
-                             self.add_files(paths);
-                             self.start_processing();
-                         }
-                     }
+                        if let Some(paths) = rfd::FileDialog::new().pick_files() {
+                            self.add_files(paths);
+                            self.start_processing();
+                        }
+                    }
 
-                    if !self.files.is_empty() && !self.processing && ui.button("🚀 开始压缩").clicked() {
+                    if !self.files.is_empty()
+                        && !self.processing
+                        && ui.button("🚀 开始压缩").clicked()
+                    {
                         self.start_processing();
                     }
 
@@ -669,7 +725,11 @@ impl eframe::App for ImageCompressorApp {
                 .show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.add_space(10.0);
-                        ui.label(egui::RichText::new("📸 图片高速压缩工具").size(20.0).strong());
+                        ui.label(
+                            egui::RichText::new("📸 图片高速压缩工具")
+                                .size(20.0)
+                                .strong(),
+                        );
                         ui.add_space(10.0);
                         ui.label(format!("版本: {}", self.about_version));
                         ui.add_space(10.0);
@@ -723,8 +783,9 @@ fn main() -> Result<()> {
     eframe::run_native(
         "rust_image_compressor",
         options,
-        Box::new(|cc| Box::new(ImageCompressorApp::new(cc))),
-    ).map_err(|e| anyhow::anyhow!("GUI error: {}", e))?;
+        Box::new(|cc| Ok(Box::new(ImageCompressorApp::new(cc)))),
+    )
+    .map_err(|e| anyhow::anyhow!("GUI error: {}", e))?;
 
     Ok(())
 }
@@ -757,7 +818,7 @@ fn run_cli(cli: &Cli) -> Result<()> {
     let processor = Processor::new(process_config);
 
     let mut files = Vec::new();
-    
+
     // 处理显式的--input参数
     for input_path in &cli.input {
         if input_path.is_dir() {
@@ -773,7 +834,7 @@ fn run_cli(cli: &Cli) -> Result<()> {
             files.push(input_path.clone());
         }
     }
-    
+
     // 处理SendTo传递的位置参数
     for input_path in &cli.positional {
         if input_path.is_dir() {
@@ -874,7 +935,9 @@ fn run_json_mode(json_input: &JsonInput) -> Result<()> {
             Err(e) => (false, None, Some(e.to_string())),
         };
 
-        let compressed_size = output.as_ref().and_then(|p| fs::metadata(Path::new(p)).ok().map(|m| m.len()));
+        let compressed_size = output
+            .as_ref()
+            .and_then(|p| fs::metadata(Path::new(p)).ok().map(|m| m.len()));
         let compression_ratio = if let (Some(orig), Some(comp)) = (original_size, compressed_size) {
             Some(orig as f64 / comp as f64)
         } else {
@@ -912,9 +975,24 @@ fn run_json_mode(json_input: &JsonInput) -> Result<()> {
 fn is_supported_image(path: &Path) -> bool {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_lowercase();
-        matches!(ext_lower.as_str(), 
-            "jpg" | "jpeg" | "png" | "webp" | "ico" |
-            "dng" | "cr2" | "cr3" | "nef" | "arw" | "orf" | "raf" | "rw2" | "pef" | "srw" | "3fr"
+        matches!(
+            ext_lower.as_str(),
+            "jpg"
+                | "jpeg"
+                | "png"
+                | "webp"
+                | "ico"
+                | "dng"
+                | "cr2"
+                | "cr3"
+                | "nef"
+                | "arw"
+                | "orf"
+                | "raf"
+                | "rw2"
+                | "pef"
+                | "srw"
+                | "3fr"
         )
     } else {
         false

@@ -4,18 +4,19 @@ use fast_image_resize as fr;
 use image::GenericImageView;
 use img_parts::jpeg::Jpeg;
 use memmap2::Mmap;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use once_cell::sync::Lazy;
 
 static SIPS_CONCURRENCY: AtomicUsize = AtomicUsize::new(0);
 const MAX_SIPS_CONCURRENCY: usize = 4;
 
-static THUMBNAIL_CACHE: Lazy<Mutex<HashMap<String, PathBuf>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static THUMBNAIL_CACHE: Lazy<Mutex<HashMap<String, PathBuf>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub enum ProcessMode {
@@ -87,7 +88,10 @@ impl Processor {
 
     pub fn process_image(&self, input_path: &Path) -> Result<PathBuf> {
         let healed_path = path_self_healing(input_path);
-        let file_name_os = healed_path.file_name().unwrap_or_default().to_string_lossy();
+        let file_name_os = healed_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
         if file_name_os.starts_with("._") {
             return Err(anyhow::anyhow!("跳过系统隐藏文件"));
         }
@@ -158,7 +162,8 @@ impl Processor {
         }
         SIPS_CONCURRENCY.fetch_add(1, Ordering::SeqCst);
 
-        let input_path_abs = fs::canonicalize(input_path).unwrap_or_else(|_| input_path.to_path_buf());
+        let input_path_abs =
+            fs::canonicalize(input_path).unwrap_or_else(|_| input_path.to_path_buf());
         let result = (|| -> Result<()> {
             let mut preview_cmd = std::process::Command::new("sips");
             preview_cmd
@@ -269,12 +274,7 @@ impl Processor {
         Ok(())
     }
 
-    fn process_normal(
-        &self,
-        input_path: &Path,
-        output_path: &Path,
-        extension: &str,
-    ) -> Result<()> {
+    fn process_normal(&self, input_path: &Path, output_path: &Path, extension: &str) -> Result<()> {
         let img = load_image_safe(input_path)?;
         let (width, height) = img.dimensions();
 
@@ -326,7 +326,7 @@ impl Processor {
                 let encoder = PngEncoder::new_with_quality(
                     &mut cursor,
                     CompressionType::Best,
-                    FilterType::Adaptive
+                    FilterType::Adaptive,
                 );
                 dynamic_img.write_with_encoder(encoder)?;
                 result_data = cursor.into_inner();
@@ -381,12 +381,14 @@ impl Processor {
                 let encode_jpeg = |quality: u8| -> Result<Vec<u8>, anyhow::Error> {
                     let mut buf = Vec::new();
                     let encoder = jpeg_encoder::Encoder::new(&mut buf, quality);
-                    encoder.encode(
-                        &rgb_buf,
-                        new_width as u16,
-                        new_height as u16,
-                        jpeg_encoder::ColorType::Rgb,
-                    ).map_err(|e| anyhow::anyhow!("JPEG encoding failed: {}", e))?;
+                    encoder
+                        .encode(
+                            &rgb_buf,
+                            new_width as u16,
+                            new_height as u16,
+                            jpeg_encoder::ColorType::Rgb,
+                        )
+                        .map_err(|e| anyhow::anyhow!("JPEG encoding failed: {}", e))?;
                     Ok(buf)
                 };
 
@@ -403,14 +405,18 @@ impl Processor {
 
                         while low <= high {
                             let mid = (low + high) / 2;
-                            if mid == 0 { break; }
+                            if mid == 0 {
+                                break;
+                            }
 
                             if let Ok(data) = encode_jpeg(mid) {
                                 if data.len() <= limit {
                                     best_data = data;
                                     low = mid + 1;
                                 } else {
-                                    if mid == 0 { break; }
+                                    if mid == 0 {
+                                        break;
+                                    }
                                     high = mid - 1;
                                 }
                             } else {
@@ -477,7 +483,10 @@ fn preserve_exif_safe(input_path: &Path, result_data: &[u8]) -> Vec<u8> {
     output_jpeg.encoder().bytes().to_vec()
 }
 
-pub fn app_config_to_process_config(config: &AppConfig, output_dir: Option<PathBuf>) -> ProcessConfig {
+pub fn app_config_to_process_config(
+    config: &AppConfig,
+    output_dir: Option<PathBuf>,
+) -> ProcessConfig {
     match config.mode {
         ProcessMode::WeChat => ProcessConfig {
             mode: ProcessMode::WeChat,
@@ -516,7 +525,10 @@ pub fn app_config_to_process_config(config: &AppConfig, output_dir: Option<PathB
 }
 
 pub fn get_thumbnail_cache(path: &str) -> Option<PathBuf> {
-    THUMBNAIL_CACHE.lock().ok().and_then(|cache| cache.get(path).cloned())
+    THUMBNAIL_CACHE
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(path).cloned())
 }
 
 pub fn set_thumbnail_cache(path: &str, thumbnail_path: &Path) {
