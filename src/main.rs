@@ -7,10 +7,13 @@ use clap::Parser;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use eframe::egui;
 use egui::IconData;
+use num_cpus::get;
 use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cli::{Cli, FileResult, JsonInput, JsonOutput};
 use rust_image_compressor::{
@@ -33,7 +36,7 @@ fn get_config_file_path() -> Result<PathBuf> {
 enum AppEvent {
     FilesAdded(Vec<PathBuf>),
     ProcessingStarted,
-    ProcessingProgress(usize, usize),
+    ProcessingProgress(usize, usize), // file_id, success_flag
     ProcessingFinished(usize, usize),
     ClearFiles,
     ShowOutputFolder,
@@ -72,6 +75,30 @@ impl ImageCompressorApp {
 
         let config = load_config().unwrap_or_default();
 
+        // 先设置视觉样式，避免窗口背景闪烁！
+        let mut visuals = egui::Visuals::light();
+        visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(248, 250, 252);
+        visuals.widgets.noninteractive.fg_stroke =
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59));
+        visuals.widgets.noninteractive.corner_radius = 8.0.into();
+
+        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(255, 255, 255);
+        visuals.widgets.inactive.corner_radius = 8.0.into();
+
+        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(239, 246, 255);
+        visuals.widgets.hovered.corner_radius = 8.0.into();
+
+        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(219, 234, 254);
+        visuals.widgets.active.corner_radius = 8.0.into();
+
+        visuals.selection.bg_fill = egui::Color32::from_rgb(37, 99, 235);
+        visuals.window_fill = egui::Color32::from_rgb(248, 250, 252);
+        visuals.window_corner_radius = 12.0.into();
+        visuals.panel_fill = egui::Color32::from_rgb(248, 250, 252);
+
+        cc.egui_ctx.set_visuals(visuals);
+
+        // 再设置字体
         let mut fonts = egui::FontDefinitions::default();
 
         let font_paths = if cfg!(target_os = "windows") {
@@ -112,27 +139,6 @@ impl ImageCompressorApp {
 
         cc.egui_ctx.set_fonts(fonts);
 
-        let mut visuals = egui::Visuals::light();
-        visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(248, 250, 252);
-        visuals.widgets.noninteractive.fg_stroke =
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59));
-        visuals.widgets.noninteractive.corner_radius = 8.0.into();
-
-        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(255, 255, 255);
-        visuals.widgets.inactive.corner_radius = 8.0.into();
-
-        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(239, 246, 255);
-        visuals.widgets.hovered.corner_radius = 8.0.into();
-
-        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(219, 234, 254);
-        visuals.widgets.active.corner_radius = 8.0.into();
-
-        visuals.selection.bg_fill = egui::Color32::from_rgb(37, 99, 235);
-        visuals.window_fill = egui::Color32::from_rgb(248, 250, 252);
-        visuals.window_corner_radius = 12.0.into();
-
-        cc.egui_ctx.set_visuals(visuals);
-
         Self {
             dark_mode: false,
             config,
@@ -143,13 +149,18 @@ impl ImageCompressorApp {
             show_about: false,
             show_advanced: false,
             custom_output_dir: None,
-            about_version: "v4.0.1".to_string(),
+            about_version: "v4.0.6".to_string(),
             tx,
             rx,
         }
     }
 
     fn add_files(&mut self, paths: Vec<PathBuf>) {
+        // 如果列表不为空，说明是新一轮任务，清空并重置计数
+        if !self.files.is_empty() {
+            self.clear_files();
+        }
+
         for path in paths {
             if path.is_dir() {
                 if let Ok(entries) = fs::read_dir(&path) {
@@ -199,34 +210,29 @@ impl ImageCompressorApp {
         let _ = std::thread::spawn(move || {
             let processor_config = app_config_to_process_config(&config, custom_output_dir);
             let processor = Processor::new(processor_config);
-            let _total = files.len();
-            let mut processed = 0;
-            let mut success = 0;
+            let total = files.len();
+            let success_count = AtomicUsize::new(0);
 
-            let results: Vec<(usize, bool, Option<String>)> = files
-                .par_iter()
-                .enumerate()
-                .map(|(i, item)| {
-                    let result = processor.process_image(&item.path);
-                    match result {
-                        Ok(_) => (i, true, None),
-                        Err(e) => (i, false, Some(e.to_string())),
-                    }
-                })
-                .collect();
+            // 使用并行迭代器，但每个任务完成后立即发送进度
+            files.par_iter().enumerate().for_each(|(index, item)| {
+                let result = processor.process_image(&item.path);
+                let is_success = result.is_ok();
 
-            for (i, is_success, _error) in results {
-                processed += 1;
                 if is_success {
-                    success += 1;
+                    success_count.fetch_add(1, Ordering::Relaxed);
                 }
+
+                // 立即发送进度更新（使用索引）
                 let _ = tx.send(AppEvent::ProcessingProgress(
-                    i,
+                    index,
                     if is_success { 1 } else { 0 },
                 ));
-            }
+            });
 
-            let _ = tx.send(AppEvent::ProcessingFinished(processed, success));
+            let _ = tx.send(AppEvent::ProcessingFinished(
+                total,
+                success_count.load(Ordering::Relaxed),
+            ));
         });
     }
 }
@@ -251,6 +257,7 @@ impl eframe::App for ImageCompressorApp {
                     self.processing = false;
                     self.processed_count = total;
                     self.success_count = success;
+                    // 不清空列表，保留显示成功数量，等待用户查看
                 }
                 AppEvent::ClearFiles => self.clear_files(),
                 AppEvent::ShowOutputFolder => {
@@ -276,8 +283,9 @@ impl eframe::App for ImageCompressorApp {
         }
 
         egui::TopBottomPanel::top("header_panel")
+            .exact_height(120.0)
             .frame(
-                egui::Frame::NONE
+                egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(20, 15))
                     .fill(egui::Color32::from_rgb(255, 255, 255)),
             )
@@ -304,8 +312,9 @@ impl eframe::App for ImageCompressorApp {
             });
 
         egui::TopBottomPanel::bottom("status_panel")
+            .exact_height(90.0)
             .frame(
-                egui::Frame::NONE
+                egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(20, 15))
                     .fill(egui::Color32::from_rgb(255, 255, 255))
                     .stroke(egui::Stroke::new(
@@ -351,16 +360,28 @@ impl eframe::App for ImageCompressorApp {
                         .fill(egui::Color32::from_rgb(37, 99, 235));
                         ui.add(pb);
                     } else {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "✨ 准备就绪，待处理 {} 个文件 | 成功 {} 个",
-                                self.files.len(),
-                                self.success_count
-                            ))
-                            .size(14.0)
-                            .strong()
-                            .color(egui::Color32::from_rgb(71, 85, 105)),
-                        );
+                        // 处理完成，显示结果
+                        if self.processed_count > 0 {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "✨ 处理完成 | 成功 {} 个 | 共 {} 个",
+                                    self.success_count, self.processed_count
+                                ))
+                                .size(14.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(71, 85, 105)),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "✨ 准备就绪，待处理 {} 个文件",
+                                    self.files.len()
+                                ))
+                                .size(14.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(71, 85, 105)),
+                            );
+                        }
                     }
                     ui.add_space(10.0);
                     ui.label(
@@ -373,14 +394,14 @@ impl eframe::App for ImageCompressorApp {
 
         egui::CentralPanel::default()
             .frame(
-                egui::Frame::NONE
+                egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(20, 10))
                     .fill(egui::Color32::from_rgb(248, 250, 252)),
             )
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_space(5.0);
-                    egui::Frame::NONE
+                    egui::Frame::new()
                         .fill(egui::Color32::WHITE)
                         .corner_radius(12.0)
                         .stroke(egui::Stroke::new(
@@ -484,7 +505,7 @@ impl eframe::App for ImageCompressorApp {
 
                     if self.show_advanced {
                         ui.add_space(8.0);
-                        egui::Frame::NONE
+                        egui::Frame::new()
                             .fill(egui::Color32::WHITE)
                             .corner_radius(12.0)
                             .stroke(egui::Stroke::new(
@@ -510,7 +531,8 @@ impl eframe::App for ImageCompressorApp {
                                                 .range(100..=10000)
                                                 .speed(10.0)
                                                 .suffix(" px"),
-                                            );
+                                            )
+                                            .on_hover_text("限制图片最长边像素，超出自动等比缩小（100–10000）");
                                             ui.end_row();
 
                                             ui.label(
@@ -520,7 +542,8 @@ impl eframe::App for ImageCompressorApp {
                                             ui.add(egui::Slider::new(
                                                 &mut self.config.custom_quality,
                                                 1..=100,
-                                            ));
+                                            ))
+                                            .on_hover_text("数值越高越清晰、体积越大（微信/高清模式已固定）");
                                             ui.end_row();
 
                                             ui.label(
@@ -535,7 +558,8 @@ impl eframe::App for ImageCompressorApp {
                                                     .range(0..=50000)
                                                     .speed(10.0)
                                                     .suffix(" KB"),
-                                                );
+                                                )
+                                                .on_hover_text("接近原图体积时处理更慢");
                                                 ui.label(
                                                     egui::RichText::new("(0 为不限制)")
                                                         .size(11.0)
@@ -550,7 +574,8 @@ impl eframe::App for ImageCompressorApp {
                                         ui.label(
                                             egui::RichText::new("导出目录:")
                                                 .color(egui::Color32::from_rgb(71, 85, 105)),
-                                        );
+                                        )
+                                        .on_hover_text("留空 = 与原图同目录");
                                         let display_path = self
                                             .custom_output_dir
                                             .as_ref()
@@ -588,7 +613,8 @@ impl eframe::App for ImageCompressorApp {
                                         ui.label(
                                             egui::RichText::new("导出格式:")
                                                 .color(egui::Color32::from_rgb(71, 85, 105)),
-                                        );
+                                        )
+                                        .on_hover_text("JPG 体积最小；保持原始仅对 PNG 生效");
                                         ui.radio_value(
                                             &mut self.config.output_format,
                                             OutputFormat::Jpeg,
@@ -598,6 +624,50 @@ impl eframe::App for ImageCompressorApp {
                                             &mut self.config.output_format,
                                             OutputFormat::KeepOriginal,
                                             "保持原始 (仅 PNG)",
+                                        );
+                                    });
+
+                                    ui.add_space(15.0);
+                                    ui.separator();
+                                    ui.add_space(10.0);
+
+                                    // 摄影级优化选项
+                                    ui.label(
+                                        egui::RichText::new("📷 摄影级优化")
+                                            .size(14.0)
+                                            .strong()
+                                            .color(egui::Color32::from_rgb(37, 99, 235)),
+                                    );
+                                    ui.add_space(5.0);
+
+                                    ui.horizontal(|ui| {
+                                        let mut sharpening = self.config.enable_sharpening;
+                                        ui.checkbox(&mut sharpening, "智能锐化");
+                                        self.config.enable_sharpening = sharpening;
+
+                                        if ui
+                                            .button("ℹ️")
+                                            .on_hover_text(
+                                                "根据图片尺寸和内容智能锐化，避免过度处理",
+                                            )
+                                            .clicked()
+                                        {
+                                            // 可以显示更多信息
+                                        }
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("色彩空间:")
+                                                .size(12.0)
+                                                .color(egui::Color32::GRAY),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(
+                                                "≤3000px 自动转 sRGB，>3000px 保持原色域",
+                                            )
+                                            .size(11.0)
+                                            .color(egui::Color32::GRAY),
                                         );
                                     });
                                 });
@@ -652,6 +722,11 @@ impl eframe::App for ImageCompressorApp {
                                 egui::RichText::new("支持 JPG, PNG, WEBP, DNG, RAW 等格式")
                                     .size(12.0)
                                     .color(egui::Color32::from_rgb(100, 116, 139)),
+                            );
+                            ui.label(
+                                egui::RichText::new("支持整个文件夹，自动递归处理子目录")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(148, 163, 184)),
                             );
 
                             ui.add_space(15.0);
@@ -763,6 +838,11 @@ fn main() -> Result<()> {
         return run_cli(&cli);
     }
 
+    // 预热 Rayon 全局线程池（仅一次），消除首次拖入时的卡顿
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(get())
+        .build_global();
+
     let icon_data = load_icon();
 
     let mut viewport = egui::ViewportBuilder::default()
@@ -791,7 +871,7 @@ fn main() -> Result<()> {
 }
 
 fn load_icon() -> Option<IconData> {
-    match ::image::load_from_memory(include_bytes!("../icon.jpg")) {
+    match ::image::load_from_memory(include_bytes!("../icon.png")) {
         Ok(img) => {
             let rgba = img.to_rgba8();
             let (w, h) = rgba.dimensions();
@@ -806,17 +886,7 @@ fn load_icon() -> Option<IconData> {
 }
 
 fn run_cli(cli: &Cli) -> Result<()> {
-    if cli.json {
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        let json_input: JsonInput = serde_json::from_str(&input)?;
-        return run_json_mode(&json_input);
-    }
-
-    let app_config = cli.to_app_config();
-    let process_config = app_config_to_process_config(&app_config, cli.output_dir.clone());
-    let processor = Processor::new(process_config);
-
+    // 先收集文件列表
     let mut files = Vec::new();
 
     // 处理显式的--input参数
@@ -851,6 +921,27 @@ fn run_cli(cli: &Cli) -> Result<()> {
         }
     }
 
+    // 如果是 JSON 模式
+    if cli.json {
+        // 先尝试从 stdin 读取 JSON
+        let mut stdin_input = String::new();
+        let stdin_result = std::io::stdin().read_to_string(&mut stdin_input);
+        
+        if stdin_result.is_ok() && !stdin_input.trim().is_empty() {
+            // 从 stdin 读到了 JSON，用 JSON 模式
+            let json_input: JsonInput = serde_json::from_str(&stdin_input)?;
+            return run_json_mode(&json_input);
+        } else {
+            // 没有从 stdin 读到 JSON，用 CLI 参数，但输出 JSON 格式
+            return run_cli_with_json_output(cli, &files);
+        }
+    }
+
+    // 普通 CLI 模式（非 JSON）
+    let app_config = cli.to_app_config();
+    let process_config = app_config_to_process_config(&app_config, cli.output_dir.clone());
+    let processor = Processor::new(process_config);
+
     let _total = files.len();
     let mut completed = 0;
     let mut failed = 0;
@@ -882,6 +973,59 @@ fn run_cli(cli: &Cli) -> Result<()> {
     if failed > 0 {
         std::process::exit(1);
     }
+
+    Ok(())
+}
+
+/// 用 CLI 参数处理，但输出 JSON 格式
+fn run_cli_with_json_output(cli: &Cli, files: &[PathBuf]) -> Result<()> {
+    let app_config = cli.to_app_config();
+    let process_config = app_config_to_process_config(&app_config, cli.output_dir.clone());
+    let processor = Processor::new(process_config);
+
+    let mut results = Vec::new();
+    for file in files {
+        let file_str = file.display().to_string();
+        let original_size = fs::metadata(file).ok().map(|m| m.len());
+
+        let (success, output, error) = match processor.process_image(file) {
+            Ok(output_path) => (true, Some(output_path.display().to_string()), None),
+            Err(e) => (false, None, Some(e.to_string())),
+        };
+
+        let compressed_size = output
+            .as_ref()
+            .and_then(|p| fs::metadata(Path::new(p)).ok().map(|m| m.len()));
+        let compression_ratio = if let (Some(orig), Some(comp)) = (original_size, compressed_size) {
+            Some(orig as f64 / comp as f64)
+        } else {
+            None
+        };
+
+        results.push(FileResult {
+            input: file_str,
+            output,
+            success,
+            error,
+            original_size,
+            compressed_size,
+            compression_ratio,
+        });
+    }
+
+    let total = results.len();
+    let completed = results.iter().filter(|r| r.success).count();
+    let failed = results.iter().filter(|r| !r.success).count();
+
+    let json_output = JsonOutput {
+        success: failed == 0,
+        total,
+        completed,
+        failed,
+        results,
+    };
+
+    println!("{}", serde_json::to_string(&json_output)?);
 
     Ok(())
 }
@@ -967,7 +1111,7 @@ fn run_json_mode(json_input: &JsonInput) -> Result<()> {
         results,
     };
 
-    println!("{}", serde_json::to_string_pretty(&json_output)?);
+    println!("{}", serde_json::to_string(&json_output)?);
 
     Ok(())
 }
