@@ -1,23 +1,6 @@
-# Rust 构建产物
-/target/
-
-# macOS app bundle 与打包产物（成品走 Release 附件，不入库）
-**/*.app
+target/
+dist/
+test_images/
+ab_output/
 *.zip
-图片高速压缩_Win_v4.0.6/
-
-# 示例大图（仅用于本地测试，不入库）
-GYL_*.JPG
-*.JPG
-*.jpeg
-
-# 图标源文件必须入库（build.rs / include_bytes! 依赖），故不忽略：
-#   icon.png  icon.ico  icon.icns
-
-# 备份与临时文件
-AppIcon_backup_before_png.icns
-_archive/
-_BACKUP_*/
-*.bak
-*.tmp
 .DS_Store
