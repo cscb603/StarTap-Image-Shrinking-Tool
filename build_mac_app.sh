@@ -1,11 +1,11 @@
 #!/bin/bash
-# 星TAP 高清缩图 v4.0.6 - macOS App 打包脚本
+# 星TAP 高清缩图 v4.1.0 - macOS App 打包脚本
 # 星 TAP 实验室出品
 
 set -e
 
 APP_NAME="图片高速压缩"
-VERSION="4.0.6"
+VERSION="4.1.0"
 APP_DIR="${APP_NAME}.app"
 BINARY_NAME="ImageCompressor"
 
@@ -39,9 +39,9 @@ else
     echo "⚠️ 警告：未找到 icon.icns 文件"
 fi
 
-# 拷贝 icon.jpg (GUI 加载使用)
-if [ -f "icon.jpg" ]; then
-    cp "icon.jpg" "${APP_DIR}/Contents/Resources/"
+# 拷贝 icon.png (GUI 二进制嵌入用)
+if [ -f "icon.png" ]; then
+    cp "icon.png" "${APP_DIR}/Contents/Resources/"
 fi
 
 # 6. 创建 Info.plist
@@ -73,13 +73,13 @@ cat > "${APP_DIR}/Contents/Info.plist" << EOF
 </plist>
 EOF
 
-# 7. 代码签名
+# 7. 先清除扩展属性（避免 codesign 因 com.apple.ResourceFork 等脏 xattr 失败）
+echo "🧹 清除扩展属性..."
+xattr -cr "${APP_DIR}" || true
+
+# 8. 代码签名（必须在清 xattr 之后，否则签名落在脏属性上无效）
 echo "🔐 执行代码签名..."
 codesign --force --deep --sign - "${APP_DIR}" || true
-
-# 8. 清除扩展属性
-echo "🧽 清除扩展属性..."
-xattr -cr "${APP_DIR}" || true
 
 # 9. 验证 App 结构
 echo "✅ 验证 App 结构..."
