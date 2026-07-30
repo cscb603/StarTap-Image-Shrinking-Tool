@@ -195,13 +195,14 @@ impl Processor {
         // 输出路径与 expected_output_path 严格同源
         let output_path = self.expected_output_path(&healed_path);
 
-        let mut metrics: Option<PerceptualMetrics> = None;
+        let metrics: Option<PerceptualMetrics>;
 
         #[cfg(target_os = "macos")]
         {
             let file_stem = healed_path.file_stem().unwrap().to_string_lossy();
             if is_raw {
                 self.process_raw(&healed_path, &output_path, &file_stem, &file_name_os)?;
+                metrics = None;
             } else {
                 metrics = self.process_normal(&healed_path, &output_path, &extension)?;
             }
