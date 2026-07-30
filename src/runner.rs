@@ -938,6 +938,13 @@ pub(crate) fn run_json_mode(json_input: &JsonInput) -> Result<()> {
             _ => app_config.color_space = ColorSpace::KeepOriginal,
         }
     }
+    // v4.3.0：色彩子采样（JSON 可覆盖默认 420）
+    if let Some(s) = &json_input.subsampling {
+        let s = s.to_lowercase();
+        if s == "444" || s == "422" || s == "420" {
+            app_config.subsampling = s;
+        }
+    }
 
     // 平台阈值预设（§2）+ 体积线覆盖（与 CLI 同逻辑）
     if let Some(plat) = &json_input.platform {

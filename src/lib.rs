@@ -68,6 +68,9 @@ pub struct AppConfig {
     pub quality_mode: String,
     #[serde(default = "default_platform")]
     pub platform: String,
+    // v4.3.0：色彩子采样（照片 420 省 ~1/3 码率 / 截图文字 444 防模糊 / 422 平衡）
+    #[serde(default = "default_subsampling")]
+    pub subsampling: String,
 }
 
 fn default_usage_mode() -> String {
@@ -78,6 +81,10 @@ fn default_quality_mode() -> String {
 }
 fn default_platform() -> String {
     "wechat".to_string()
+}
+
+fn default_subsampling() -> String {
+    "420".to_string()
 }
 
 impl Default for AppConfig {
@@ -101,6 +108,7 @@ impl Default for AppConfig {
             usage_mode: "social".to_string(),
             quality_mode: "perceptual".to_string(),
             platform: "wechat".to_string(),
+            subsampling: "420".to_string(),
         }
     }
 }
@@ -122,6 +130,8 @@ pub struct ProcessConfig {
     pub sharpening_amount: f32,
     /// v4.2.0-exp 感知压缩选项：None = 完全走 v4.1.0 旧路径（GUI 恒为 None）
     pub perceptual: Option<PerceptualOptions>,
+    // v4.3.0：色彩子采样（照片 420 / 截图 444 / 平衡 422）
+    pub subsampling: String,
 }
 
 pub struct Processor {
@@ -527,36 +537,30 @@ impl Processor {
 
                 let quant_mode = perceptual.map(|p| p.quant_mode);
                 let encode_jpeg = |quality: u8| -> Result<Vec<u8>, anyhow::Error> {
-                    let mut buf = Vec::new();
-                    let mut encoder = jpeg_encoder::Encoder::new(&mut buf, quality);
+                    use mozjpeg_rs::{Encoder, QuantTableIdx, Subsampling};
+                    // P1：mozjpeg-rs 替换 jpeg-encoder（BSD-3，纯 Rust，零 C 依赖）
+                    // 默认 4:2:0 子采样（照片省 ~1/3 码率）；截图/文字场景由 subsampling 字段切 4:4:4（P2 贯通）
+                    let sub = match self.config.subsampling.as_str() {
+                        "444" => Subsampling::S444,
+                        "422" => Subsampling::S422,
+                        _ => Subsampling::S420, // "420" 默认（照片省码率）
+                    };
+                    let mut encoder = Encoder::default()
+                        .quality(quality)
+                        .progressive(true)
+                        .optimize_huffman(true)
+                        .subsampling(sub);
+                    // 感知模式：用 MS-SSIM 调优量化表（mozjpeg-rs 不支持外部自定义表注入，
+                    // 原 jpeg-encoder 的 MsSsim/Csf 自定义表统一改用内置 MssimTuned，叠加 trellis 画质更优）
                     match quant_mode {
-                        Some(perceptual::QuantMode::MsSsim) => {
-                            // P2-A：jpeg-encoder 内置 MS-SSIM 调优表（走 quality 缩放，安全）
-                            encoder.set_quantization_tables(
-                                jpeg_encoder::QuantizationTableType::CustomMsSsim,
-                                jpeg_encoder::QuantizationTableType::CustomMsSsim,
-                            );
+                        Some(perceptual::QuantMode::MsSsim) | Some(perceptual::QuantMode::Csf) => {
+                            encoder = encoder.quant_tables(QuantTableIdx::MssimTuned);
                         }
-                        Some(perceptual::QuantMode::Csf) => {
-                            // P2-B：自算 CSF 感知表。坑（§11.2-6）：Custom 表原值直用、
-                            // 不做 quality 缩放 → 必须在生成时按 quality 自行缩放
-                            let (luma, chroma) = perceptual::csf_quant_tables(quality);
-                            encoder.set_quantization_tables(
-                                jpeg_encoder::QuantizationTableType::Custom(Box::new(luma)),
-                                jpeg_encoder::QuantizationTableType::Custom(Box::new(chroma)),
-                            );
-                        }
-                        _ => {} // Standard / 非感知模式：v4.1.0 默认 Annex-K 表
+                        _ => {} // 非感知模式：mozjpeg 默认 Annex-K 表（v4.1.0 行为等价）
                     }
                     encoder
-                        .encode(
-                            &rgb_buf[..],
-                            new_width as u16,
-                            new_height as u16,
-                            jpeg_encoder::ColorType::Rgb,
-                        )
-                        .map_err(|e| anyhow::anyhow!("JPEG encoding failed: {}", e))?;
-                    Ok(buf)
+                        .encode_rgb(rgb_buf, new_width, new_height)
+                        .map_err(|e| anyhow::anyhow!("JPEG encoding failed: {}", e))
                 };
 
                 if let Some(limit) = limit_bytes {
@@ -656,10 +660,17 @@ fn preserve_exif_safe(input_path: &Path, result_data: &[u8]) -> Vec<u8> {
         Err(_) => return result_data.to_vec(),
     };
 
-    let exif_segment = match input_jpeg.segments().iter().find(|s| s.marker() == 0xE1) {
-        Some(seg) => seg.clone(),
-        None => return result_data.to_vec(),
-    };
+    // P4：遍历所有 APP1(0xE1) 段，EXIF 与 ICC_PROFILE 都保留
+    // （v4.2.0 只取首个 0xE1 会丢宽色域 ICC 配置，违背"保证原图色彩"）
+    let app1_segments: Vec<_> = input_jpeg
+        .segments()
+        .iter()
+        .filter(|s| s.marker() == 0xE1)
+        .cloned()
+        .collect();
+    if app1_segments.is_empty() {
+        return result_data.to_vec();
+    }
 
     drop(input_mmap);
     drop(input_file);
@@ -670,7 +681,12 @@ fn preserve_exif_safe(input_path: &Path, result_data: &[u8]) -> Vec<u8> {
     };
 
     let mut output_jpeg = output_jpeg;
-    output_jpeg.segments_mut().insert(1, exif_segment);
+    // 从位置 1 起依次插入每个 APP1 段（保持原顺序：EXIF 与 ICC 均保留）
+    let mut insert_pos = 1;
+    for seg in &app1_segments {
+        output_jpeg.segments_mut().insert(insert_pos, seg.clone());
+        insert_pos += 1;
+    }
     output_jpeg.encoder().bytes().to_vec()
 }
 
@@ -721,6 +737,7 @@ pub fn app_config_to_process_config(
         keep_original_name: config.keep_original_name,
         output_format: config.output_format,
         color_space: config.color_space,
+        subsampling: config.subsampling.clone(),
         // 摄影级优化
         enable_sharpening: config.enable_sharpening,
         sharpening_radius: config.sharpening_radius,

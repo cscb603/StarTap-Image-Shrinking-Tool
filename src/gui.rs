@@ -158,7 +158,7 @@ impl ImageCompressorApp {
             show_about: false,
             show_advanced: false,
             custom_output_dir: None,
-            about_version: "v4.2.0".to_string(),
+            about_version: "v4.3.0-exp".to_string(),
             stop_flag: Arc::new(AtomicBool::new(false)),
             stop_requested: false,
             stopped: false,
@@ -961,6 +961,38 @@ impl eframe::App for ImageCompressorApp {
                                                         .color(egui::Color32::GRAY),
                                                 );
                                             });
+                                            ui.end_row();
+
+                                            ui.label(
+                                                egui::RichText::new("色彩子采样:")
+                                                    .color(egui::Color32::from_rgb(71, 85, 105)),
+                                            )
+                                            .on_hover_text(
+                                                "照片默认 4:2:0（更省体积）；截图/文字用 4:4:4 防模糊",
+                                            );
+                                            egui::ComboBox::from_label("")
+                                                .selected_text(match self.config.subsampling.as_str() {
+                                                    "444" => "截图文字 4:4:4",
+                                                    "422" => "平衡 4:2:2",
+                                                    _ => "照片 4:2:0 (默认)",
+                                                })
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(
+                                                        &mut self.config.subsampling,
+                                                        "420".to_string(),
+                                                        "照片 4:2:0 (默认)",
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut self.config.subsampling,
+                                                        "444".to_string(),
+                                                        "截图文字 4:4:4",
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut self.config.subsampling,
+                                                        "422".to_string(),
+                                                        "平衡 4:2:2",
+                                                    );
+                                                });
                                             ui.end_row();
                                         });
 
