@@ -278,21 +278,42 @@ impl ImageCompressorApp {
             let total = files.len();
             let success_count = AtomicUsize::new(0);
 
-            // 使用并行迭代器，但每个任务完成后立即发送进度
-            files.par_iter().enumerate().for_each(|(index, item)| {
-                let result = processor.process_image(&item.path);
-                let is_success = result.is_ok();
+            // 分桶调度：大图（TIFF / 超大文件 / 超高像素）串行，小图并行。
+            // 目的：多张超大 TIFF 若并行解码会瞬间吃满内存触发 OOM；
+            //       串行把内存峰值锁死在「单张」，处理完释放再下一张，绝不叠加。
+            let mut big: Vec<(usize, PathBuf)> = Vec::new();
+            let mut small: Vec<(usize, PathBuf)> = Vec::new();
+            for (index, item) in files.iter().enumerate() {
+                if is_large_image(&item.path) {
+                    big.push((index, item.path.clone()));
+                } else {
+                    small.push((index, item.path.clone()));
+                }
+            }
 
+            // 小图并行（rayon 全局池，GUI 已封顶 4 线程，内存可控）
+            small.par_iter().for_each(|(index, path)| {
+                let is_success = processor.process_image(path).is_ok();
                 if is_success {
                     success_count.fetch_add(1, Ordering::Relaxed);
                 }
-
-                // 立即发送进度更新（使用索引）
                 let _ = tx.send(AppEvent::ProcessingProgress(
-                    index,
+                    *index,
                     if is_success { 1 } else { 0 },
                 ));
             });
+
+            // 大图串行（一次一张，内存峰值 = 单张，绝不叠加）
+            for (index, path) in &big {
+                let is_success = processor.process_image(path).is_ok();
+                if is_success {
+                    success_count.fetch_add(1, Ordering::Relaxed);
+                }
+                let _ = tx.send(AppEvent::ProcessingProgress(
+                    *index,
+                    if is_success { 1 } else { 0 },
+                ));
+            }
 
             let _ = tx.send(AppEvent::ProcessingFinished(
                 total,
@@ -300,6 +321,30 @@ impl ImageCompressorApp {
             ));
         });
     }
+}
+
+/// 判定是否需要串行处理的大图。
+/// 命中任一即视为大图：TIFF 后缀（解码后内存远超文件体积）/
+/// 原始文件 > 80MB / 解码后像素 > 4000 万（约 8000×5000）。
+/// 大图串行可确保内存峰值 = 单张，避免多张并行解码撑爆内存。
+fn is_large_image(path: &std::path::Path) -> bool {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let e = ext.to_ascii_lowercase();
+        if e == "tif" || e == "tiff" {
+            return true;
+        }
+    }
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > 80 * 1024 * 1024 {
+            return true;
+        }
+    }
+    if let Ok((w, h)) = image::image_dimensions(path) {
+        if (w as u64) * (h as u64) > 40_000_000 {
+            return true;
+        }
+    }
+    false
 }
 
 impl eframe::App for ImageCompressorApp {
@@ -998,8 +1043,10 @@ fn main() -> Result<()> {
     }
 
     // 预热 Rayon 全局线程池（仅一次），消除首次拖入时的卡顿
+    // GUI 默认限制并行线程数（封顶 4），避免多张大图同时解码吃满内存导致 OOM
+    let gui_workers = std::cmp::min(get(), 4);
     let _ = rayon::ThreadPoolBuilder::new()
-        .num_threads(get())
+        .num_threads(gui_workers)
         .build_global();
 
     let icon_data = load_icon();
