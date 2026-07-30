@@ -1,0 +1,6 @@
+target/
+dist/
+test_images/
+ab_output/
+*.zip
+.DS_Store

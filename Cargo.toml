@@ -1,0 +1,36 @@
+[package]
+name = "rust_image_compressor"
+version = "4.1.0"
+edition = "2021"
+authors = ["星 TAP 实验室"]
+description = "图片高速压缩工具 - 星 TAP 实验室出品（摄影级优化）"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+image = { version = "0.25", features = ["png", "jpeg", "ico", "webp"] }
+fast_image_resize = "6.0"
+jpeg-encoder = "0.7"
+rayon = "1.11"
+num_cpus = "1.16"
+anyhow = "1.0"
+crossbeam-channel = "0.5"
+opener = "0.6"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+rfd = "0.15"
+img-parts = "0.4"
+bytes = "1.7"
+serde_json = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+memmap2 = "0.9"
+dirs = "5.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
+
+# Windows 资源（图标 / DPI 清单）注入由 build.rs 在交叉编译时处理，见 build.rs
