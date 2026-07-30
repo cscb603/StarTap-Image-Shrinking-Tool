@@ -220,6 +220,19 @@ impl Processor {
         Ok((output_path, metrics))
     }
 
+    /// 返回当前感知压缩配置（None = 走 v4.1.0 旧路径），供 CLI/JSON 输出 metrics 元数据
+    pub fn perceptual_config(&self) -> Option<&PerceptualOptions> {
+        self.config.perceptual.as_ref()
+    }
+
+    /// 实际生效的体积预算（KB）：感知模式 budget_kb 覆盖 target_kb
+    pub fn effective_target_kb(&self) -> u32 {
+        match &self.config.perceptual {
+            Some(p) => p.budget_kb.unwrap_or(self.config.target_kb),
+            None => self.config.target_kb,
+        }
+    }
+
     #[cfg(target_os = "macos")]
     fn process_raw(
         &self,

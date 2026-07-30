@@ -28,9 +28,13 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use image::GenericImageView;
 
-use cli::{build_capabilities, build_envelope, Cli, FileResult, JsonInput};
-use rust_image_compressor::perceptual::PerceptualOptions;
+use cli::{
+    build_capabilities, build_envelope, platform_preset, Cli, FileResult, JsonInput,
+    PerceptualMetricsOut, StepTimings,
+};
+use rust_image_compressor::perceptual::{FocusMode, PerceptualMetrics, PerceptualOptions, QuantMode};
 use rust_image_compressor::{
     app_config_to_process_config, AppConfig, ColorSpace, OutputFormat, ProcessMode, Processor,
 };
@@ -44,6 +48,8 @@ fn perceptual_options_from_cli(cli: &Cli) -> Option<PerceptualOptions> {
         denoise_strength: cli.denoise_strength.min(100),
         focus_mode: cli.focus_mode.into(),
         quant_mode: cli.quant_mode.into(),
+        quality_ceil: cli.quality_ceil.unwrap_or(95),
+        platform: cli.platform.map(|p| p.as_str().to_string()),
         ..Default::default()
     })
 }
@@ -1049,6 +1055,11 @@ fn run_cli(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
+    // A/B 对照 / 基准对比模式：旧路径(v4.1.0) vs 新感知路径 双输出 + 对比表
+    if cli.ab || cli.benchmark {
+        return run_compare_mode(cli, &files);
+    }
+
     let app_config = cli.to_app_config();
 
     // CLI/AI 模式默认输出到 ./compressed/，不污染源目录
@@ -1237,6 +1248,39 @@ fn run_cli_with_json_output(cli: &Cli, files: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
+/// 由 Processor 的感知配置 + 实测指标 组装 JSON 输出用的感知指标块（perceptual=None 且无指标时返回 None）
+fn build_perceptual_out(
+    processor: &Processor,
+    metrics: Option<&PerceptualMetrics>,
+) -> Option<PerceptualMetricsOut> {
+    let cfg = processor.perceptual_config();
+    let mode = cfg.is_some();
+    if !mode && metrics.is_none() {
+        return None;
+    }
+    let budget = processor.effective_target_kb();
+    Some(PerceptualMetricsOut {
+        perceptual_mode: mode,
+        platform: cfg.and_then(|c| c.platform.clone()),
+        quant_mode: cfg.map(|c| c.quant_mode.as_str().to_string()),
+        denoise_strength: cfg.map(|c| c.denoise_strength),
+        focus_mode: cfg.map(|c| match c.focus_mode {
+            FocusMode::Auto => "auto".to_string(),
+            FocusMode::Center => "center".to_string(),
+        }),
+        bytes_budget_kb: if budget > 0 { Some(budget as f64) } else { None },
+        ssim_vs_source: metrics.map(|m| m.ssim_vs_source),
+        psnr_vs_source: metrics.map(|m| m.psnr_vs_source),
+        final_quality: metrics.map(|m| m.final_quality),
+        step_timings: metrics.map(|m| StepTimings {
+            denoise_ms: m.denoise_ms,
+            downscale_ms: m.downscale_ms,
+            sharpen_ms: m.sharpen_ms,
+            encode_ms: m.encode_ms,
+        }),
+    })
+}
+
 /// 单文件处理（CLI-JSON / AI-JSON 两条通路共用）：
 /// 幂等续跑（输出已存在且未 force 则跳过）+ 路径归一化 + 完整指标
 fn process_one_file(
@@ -1267,14 +1311,15 @@ fn process_one_file(
                 compressed_size,
                 compression_ratio,
                 skipped: Some(true),
+                perceptual: build_perceptual_out(processor, None),
             };
         }
     }
 
     let original_size = fs::metadata(file).ok().map(|m| m.len());
-    let (success, output, error) = match processor.process_image(file) {
-        Ok(output_path) => (true, Some(output_path.display().to_string()), None),
-        Err(e) => (false, None, Some(e.to_string())),
+    let (success, output, error, percept) = match processor.process_image_with_metrics(file) {
+        Ok((output_path, m)) => (true, Some(output_path.display().to_string()), None, m),
+        Err(e) => (false, None, Some(e.to_string()), None),
     };
 
     let compressed_size = output
@@ -1285,6 +1330,8 @@ fn process_one_file(
         _ => None,
     };
 
+    let perceptual = build_perceptual_out(processor, percept.as_ref());
+
     FileResult {
         input: file_str,
         output: output.map(|p| p.replace('\\', "/")),
@@ -1294,6 +1341,7 @@ fn process_one_file(
         compressed_size,
         compression_ratio,
         skipped: None,
+        perceptual,
     }
 }
 
@@ -1313,6 +1361,169 @@ fn emit_jsonl(r: &FileResult) {
     if let Ok(line) = serde_json::to_string(r) {
         println!("{}", line);
     }
+}
+
+/// A/B 对照 / 基准对比：同一图分别跑旧路径(v4.1.0)与新感知路径，
+/// 输出 old/new 对照图 + 并排 montage（--ab），打印 体积/SSIM/PSNR/各步耗时 对比表（--benchmark）
+fn run_compare_mode(cli: &Cli, files: &[PathBuf]) -> Result<()> {
+    let app_config = cli.to_app_config();
+    let out_base = cli
+        .output_dir
+        .clone()
+        .map(|p| {
+            if p.is_relative() {
+                std::env::current_dir().unwrap_or_default().join(&p)
+            } else {
+                p
+            }
+        })
+        .or_else(|| Some(std::env::current_dir().unwrap_or_default().join("compressed")))
+        .unwrap_or_default();
+    let ab_dir = out_base.join("ab_output");
+    let old_dir = ab_dir.join("old");
+    let new_dir = ab_dir.join("new");
+    let _ = fs::create_dir_all(&old_dir);
+    let _ = fs::create_dir_all(&new_dir);
+
+    // 旧路径：perceptual=None，完全 v4.1.0 旧行为
+    let mut old_cfg = app_config_to_process_config(&app_config, Some(old_dir.clone()));
+    old_cfg.perceptual = None;
+    let old_proc = Processor::new(old_cfg);
+
+    // 新路径：感知压缩
+    let mut new_cfg = app_config_to_process_config(&app_config, Some(new_dir.clone()));
+    new_cfg.perceptual = perceptual_options_from_cli(cli);
+    let new_proc = Processor::new(new_cfg);
+
+    let force = cli.force;
+    let overwrite = cli.overwrite;
+
+    if cli.benchmark {
+        println!("\n=== 感知压缩 A/B 基准对比（旧 v4.1.0 vs 新感知路径）===");
+        println!(
+            "{:<26} {:>9} {:>9} {:>9} {:>9} {:>7}",
+            "file", "old_KB", "new_KB", "oldSSIM", "newSSIM", "newQ"
+        );
+    }
+
+    let mut montage_rows: Vec<String> = Vec::new();
+    for file in files {
+        let old_r = process_one_file(&old_proc, file, force, overwrite);
+        let new_r = process_one_file(&new_proc, file, force, overwrite);
+
+        let old_size = old_r.compressed_size.unwrap_or(0);
+        let new_size = new_r.compressed_size.unwrap_or(0);
+
+        // 旧/新 各自与源图（降采样后）的 SSIM，外部核算、算法同源
+        let old_ssim = old_r
+            .output
+            .as_ref()
+            .and_then(|p| ssim_psnr_vs_source(file, Path::new(p)))
+            .map(|(s, _)| s)
+            .unwrap_or(f64::NAN);
+        let new_ssim = new_r
+            .output
+            .as_ref()
+            .and_then(|p| ssim_psnr_vs_source(file, Path::new(p)))
+            .map(|(s, _)| s)
+            .unwrap_or(f64::NAN);
+        let new_q = new_r
+            .perceptual
+            .as_ref()
+            .and_then(|m| m.final_quality)
+            .unwrap_or(0);
+
+        if cli.benchmark {
+            println!(
+                "{:<26} {:>9.1} {:>9.1} {:>9.4} {:>9.4} {:>7}",
+                file.file_name()
+                    .map(|s| s.to_string_lossy())
+                    .unwrap_or_default(),
+                old_size as f64 / 1024.0,
+                new_size as f64 / 1024.0,
+                old_ssim,
+                new_ssim,
+                new_q
+            );
+        }
+
+        // 并排 montage（--ab）
+        if cli.ab {
+            if let (Some(op), Some(np)) = (old_r.output.as_ref(), new_r.output.as_ref()) {
+                let stem = file
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "image".to_string());
+                let montage_path = ab_dir.join(format!("ab_{}.jpg", stem));
+                if make_montage(Path::new(op), Path::new(np), &montage_path) {
+                    montage_rows.push(format!(
+                        "  📊 {} → ab_output/ab_{}.jpg（左=旧 v4.1.0，右=新感知）",
+                        stem, stem
+                    ));
+                }
+            }
+        }
+    }
+
+    if cli.ab {
+        println!("\n✅ A/B 对照图已输出到: {}", ab_dir.display());
+        for r in &montage_rows {
+            println!("{}", r);
+        }
+    }
+    if cli.benchmark {
+        println!("=== 对比结束（盲测请放大 200% 看睫毛/暗部）===\n");
+    }
+
+    Ok(())
+}
+
+/// 与源图（降采样到输出尺寸）对齐的 SSIM/PSNR，算法与工具内部 to_gray/ssim_gray 同源
+fn ssim_psnr_vs_source(orig: &Path, out: &Path) -> Option<(f64, f64)> {
+    let orig_img = image::open(orig).ok()?;
+    let out_img = image::open(out).ok()?;
+    let (ow, oh) = out_img.dimensions();
+    let orig_resized =
+        image::imageops::resize(&orig_img.to_rgb8(), ow, oh, image::imageops::FilterType::Triangle);
+    let orig_dyn = image::DynamicImage::ImageRgb8(orig_resized);
+    let (ref_gray, _, _) = rust_image_compressor::perceptual::to_gray(&orig_dyn);
+    let (out_gray, gw, gh) = rust_image_compressor::perceptual::to_gray(&out_img);
+    if gw != ow as usize || gh != oh as usize {
+        return None;
+    }
+    let ssim = rust_image_compressor::perceptual::ssim_gray(&ref_gray, &out_gray, gw, gh);
+    let psnr = rust_image_compressor::perceptual::psnr_gray(&ref_gray, &out_gray);
+    Some((ssim, psnr))
+}
+
+/// 左右并排 montage（中间 4px 白缝），用于 A/B 对照
+fn make_montage(left: &Path, right: &Path, out: &Path) -> bool {
+    let l = match image::open(left) {
+        Ok(i) => i,
+        Err(_) => return false,
+    };
+    let r = match image::open(right) {
+        Ok(i) => i,
+        Err(_) => return false,
+    };
+    let (lw, lh) = l.dimensions();
+    let (rw, rh) = r.dimensions();
+    let h = lh.min(rh);
+    let lw2 = ((lw as f64 * h as f64 / lh as f64) as u32).max(1);
+    let rw2 = ((rw as f64 * h as f64 / rh as f64) as u32).max(1);
+    let gap = 4u32;
+    let total_w = lw2 + gap + rw2;
+    let mut canvas = image::RgbImage::new(total_w, h);
+    for p in canvas.pixels_mut() {
+        *p = image::Rgb([255u8, 255u8, 255u8]);
+    }
+    let l_resized =
+        image::imageops::resize(&l.to_rgb8(), lw2, h, image::imageops::FilterType::Triangle);
+    image::imageops::replace(&mut canvas, &l_resized, 0, 0);
+    let r_resized =
+        image::imageops::resize(&r.to_rgb8(), rw2, h, image::imageops::FilterType::Triangle);
+    image::imageops::replace(&mut canvas, &r_resized, (lw2 + gap) as i64, 0);
+    canvas.save(out).is_ok()
 }
 
 /// 生成一张带渐变的测试图（避免纯色被编码优化成极小体积，导致自检失真）
@@ -1481,6 +1692,21 @@ fn run_json_mode(json_input: &JsonInput) -> Result<()> {
         }
     }
 
+    // 平台阈值预设（§2）+ 体积线覆盖（与 CLI 同逻辑）
+    if let Some(plat) = &json_input.platform {
+        if let Some((md, q, kb, srgb)) = platform_preset(plat) {
+            app_config.custom_max_dim = md;
+            app_config.custom_quality = q;
+            app_config.custom_target_kb = kb;
+            if srgb {
+                app_config.color_space = ColorSpace::ConvertToSRGB;
+            }
+        }
+    }
+    if let Some(kb) = json_input.target_budget_kb {
+        app_config.custom_target_kb = kb;
+    }
+
     // 输出目录：未指定时默认 ./compressed/，不污染源目录
     let output_dir = json_input
         .output_dir
@@ -1554,7 +1780,24 @@ fn run_json_mode(json_input: &JsonInput) -> Result<()> {
     // 并行并发数：AI 可经 max_workers 限流（仅在全局池尚未初始化时生效）
     apply_max_workers(json_input.max_workers);
 
-    let process_config = app_config_to_process_config(&app_config, output_dir);
+    let mut process_config = app_config_to_process_config(&app_config, output_dir);
+    // 感知压缩选项（perceptual=false 或缺失 → None → 完全走 v4.1.0 旧路径，100% 兼容）
+    process_config.perceptual = if json_input.perceptual.unwrap_or(false) {
+        Some(PerceptualOptions {
+            denoise_strength: json_input.denoise_strength.unwrap_or(25).min(100),
+            focus_mode: match json_input.focus_mode.as_deref() {
+                Some("center") => FocusMode::Center,
+                _ => FocusMode::Auto,
+            },
+            // JSON 不暴露 quant_mode，默认 CSF（最稳）
+            quant_mode: QuantMode::Csf,
+            quality_ceil: json_input.quality_ceil.unwrap_or(95),
+            budget_kb: json_input.target_budget_kb,
+            platform: json_input.platform.clone(),
+        })
+    } else {
+        None
+    };
     let processor = Processor::new(process_config);
 
     let force = json_input.force.unwrap_or(false);
