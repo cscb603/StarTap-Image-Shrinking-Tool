@@ -30,9 +30,22 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cli::{build_capabilities, build_envelope, Cli, FileResult, JsonInput};
+use rust_image_compressor::perceptual::PerceptualOptions;
 use rust_image_compressor::{
     app_config_to_process_config, AppConfig, ColorSpace, OutputFormat, ProcessMode, Processor,
 };
+
+/// 从 CLI 参数构造感知压缩选项（--perceptual 未开启时返回 None → 完全走 v4.1.0 旧路径）
+fn perceptual_options_from_cli(cli: &Cli) -> Option<PerceptualOptions> {
+    if !cli.perceptual {
+        return None;
+    }
+    Some(PerceptualOptions {
+        denoise_strength: cli.denoise_strength.min(100),
+        focus_mode: cli.focus_mode.into(),
+        ..Default::default()
+    })
+}
 
 fn get_config_file_path() -> Result<PathBuf> {
     if let Some(mut path) = dirs::config_dir() {
@@ -1055,7 +1068,8 @@ fn run_cli(cli: &Cli) -> Result<()> {
                     .join("compressed"),
             )
         });
-    let process_config = app_config_to_process_config(&app_config, effective_output_dir);
+    let mut process_config = app_config_to_process_config(&app_config, effective_output_dir);
+    process_config.perceptual = perceptual_options_from_cli(cli);
     let processor = Processor::new(process_config);
 
     // 多核并行处理，充分利用 CPU（统一走 process_one_file，支持幂等续跑/JSONL）
@@ -1190,7 +1204,8 @@ fn run_cli_with_json_output(cli: &Cli, files: &[PathBuf]) -> Result<()> {
                     .join("compressed"),
             )
         });
-    let process_config = app_config_to_process_config(&app_config, effective_output_dir);
+    let mut process_config = app_config_to_process_config(&app_config, effective_output_dir);
+    process_config.perceptual = perceptual_options_from_cli(cli);
     let processor = Processor::new(process_config);
 
     let force = cli.force;
@@ -1669,6 +1684,8 @@ fn is_supported_image(path: &Path) -> bool {
                 | "png"
                 | "webp"
                 | "ico"
+                | "tif"
+                | "tiff"
                 | "dng"
                 | "cr2"
                 | "cr3"

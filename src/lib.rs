@@ -1,5 +1,8 @@
+pub mod perceptual;
+
 use anyhow::Result;
 use bytes::Bytes;
+use perceptual::{FocusMode, PerceptualMetrics, PerceptualOptions};
 use fast_image_resize as fr;
 use image::GenericImageView;
 use img_parts::jpeg::Jpeg;
@@ -92,6 +95,8 @@ pub struct ProcessConfig {
     pub enable_sharpening: bool,
     pub sharpening_radius: f32,
     pub sharpening_amount: f32,
+    /// v4.2.0-exp 感知压缩选项：None = 完全走 v4.1.0 旧路径（GUI 恒为 None）
+    pub perceptual: Option<PerceptualOptions>,
 }
 
 pub struct Processor {
@@ -150,6 +155,14 @@ impl Processor {
     }
 
     pub fn process_image(&self, input_path: &Path) -> Result<PathBuf> {
+        self.process_image_with_metrics(input_path).map(|(p, _)| p)
+    }
+
+    /// v4.2.0-exp：处理并返回感知指标（perceptual=None 时指标恒为 None，行为同 v4.1.0）
+    pub fn process_image_with_metrics(
+        &self,
+        input_path: &Path,
+    ) -> Result<(PathBuf, Option<PerceptualMetrics>)> {
         let healed_path = path_self_healing(input_path);
         let file_name_os = healed_path
             .file_name()
@@ -182,13 +195,15 @@ impl Processor {
         // 输出路径与 expected_output_path 严格同源
         let output_path = self.expected_output_path(&healed_path);
 
+        let mut metrics: Option<PerceptualMetrics> = None;
+
         #[cfg(target_os = "macos")]
         {
             let file_stem = healed_path.file_stem().unwrap().to_string_lossy();
             if is_raw {
                 self.process_raw(&healed_path, &output_path, &file_stem, &file_name_os)?;
             } else {
-                self.process_normal(&healed_path, &output_path, &extension)?;
+                metrics = self.process_normal(&healed_path, &output_path, &extension)?;
             }
         }
 
@@ -199,10 +214,10 @@ impl Processor {
                 extension
             ));
         } else {
-            self.process_normal(&healed_path, &output_path, &extension)?;
+            metrics = self.process_normal(&healed_path, &output_path, &extension)?;
         }
 
-        Ok(output_path)
+        Ok((output_path, metrics))
     }
 
     #[cfg(target_os = "macos")]
@@ -330,9 +345,16 @@ impl Processor {
         Ok(())
     }
 
-    fn process_normal(&self, input_path: &Path, output_path: &Path, extension: &str) -> Result<()> {
+    fn process_normal(
+        &self,
+        input_path: &Path,
+        output_path: &Path,
+        extension: &str,
+    ) -> Result<Option<PerceptualMetrics>> {
         let img = load_image_safe(input_path)?;
         let (width, height) = img.dimensions();
+        let perceptual = self.config.perceptual.as_ref();
+        let mut pm = PerceptualMetrics::default();
 
         let scale = if width > self.config.max_dim || height > self.config.max_dim {
             let ratio_w = self.config.max_dim as f32 / width as f32;
@@ -345,8 +367,21 @@ impl Processor {
         let new_width = (width as f32 * scale) as u32;
         let new_height = (height as f32 * scale) as u32;
 
-        let img_rgba = img.to_rgba8();
+        let mut img_rgba = img.to_rgba8();
 
+        // 感知管线顺序铁律 §3：先降噪再降采样（噪点在高频，先抹平采样才干净）
+        // 二次压缩 JPG 禁降噪（放大块效应）→ 仅 TIFF/PNG 等无损/一次成像输入生效
+        if let Some(p) = perceptual {
+            let is_jpeg_input = matches!(extension, "jpg" | "jpeg");
+            if p.denoise_strength > 0 && !is_jpeg_input {
+                let t = std::time::Instant::now();
+                img_rgba = perceptual::bilateral_denoise(&img_rgba, p.denoise_strength);
+                pm.denoise_ms = t.elapsed().as_millis() as u64;
+                pm.denoise_applied = true;
+            }
+        }
+
+        let t_down = std::time::Instant::now();
         let src_image = fr::images::Image::from_vec_u8(
             width,
             height,
@@ -360,6 +395,7 @@ impl Processor {
         resizer.resize(&src_image, &mut dst_image, None)?;
 
         let rgba_buf = dst_image.buffer();
+        pm.downscale_ms = t_down.elapsed().as_millis() as u64;
 
         // 转换为 DynamicImage 以便后续处理
         let mut dynamic_img = image::DynamicImage::ImageRgba8(
@@ -367,8 +403,31 @@ impl Processor {
                 .ok_or_else(|| anyhow::anyhow!("Failed to create image buffer"))?,
         );
 
-        // 摄影级优化：智能自适应锐化
-        if self.config.enable_sharpening {
+        // 感知指标参考帧：降采样后、锐化编码前的灰度图
+        let reference_gray = perceptual.map(|_| perceptual::to_gray(&dynamic_img));
+
+        if let Some(p) = perceptual {
+            // 感知管线顺序铁律 §3：锐化在目标分辨率上做、且是编码前最后一步
+            let t = std::time::Instant::now();
+            let rgba_now = dynamic_img.to_rgba8();
+            let mask = match p.focus_mode {
+                FocusMode::Auto => perceptual::saliency_mask(&rgba_now),
+                FocusMode::Center => perceptual::center_mask(new_width, new_height),
+            };
+            let larger = new_width.max(new_height);
+            // 保守参数（§9 保画质铁律）：radius 随尺寸微调，amount 经掩码加权后有效强度更低
+            let (radius, amount, threshold) = if larger < 1500 {
+                (0.7, 0.55, 6)
+            } else if larger < 3000 {
+                (0.9, 0.7, 5)
+            } else {
+                (1.1, 0.8, 4)
+            };
+            dynamic_img =
+                perceptual::masked_usm_sharpen(&dynamic_img, &mask, radius, amount, threshold);
+            pm.sharpen_ms = t.elapsed().as_millis() as u64;
+        } else if self.config.enable_sharpening {
+            // v4.1.0 旧路径：智能自适应锐化（行为不变）
             dynamic_img = smart_adaptive_sharpen(&dynamic_img, new_width.max(new_height));
         }
 
@@ -401,19 +460,45 @@ impl Processor {
                 result_data = cursor.into_inner();
             }
             _ => {
+                let t_encode = std::time::Instant::now();
                 // 转换为 RGB 格式
                 let rgb_img = dynamic_img.to_rgb8();
                 let rgb_buf = rgb_img.as_raw();
 
-                let limit_bytes = if self.config.target_kb > 0 {
-                    Some((self.config.target_kb as usize) * 1024)
+                // 感知模式：budget_kb 覆盖 target_kb；质量上限 quality_ceil
+                let effective_target_kb = match perceptual {
+                    Some(p) => p.budget_kb.unwrap_or(self.config.target_kb),
+                    None => self.config.target_kb,
+                };
+                let limit_bytes = if effective_target_kb > 0 {
+                    Some((effective_target_kb as usize) * 1024)
                 } else {
                     None
                 };
 
+                let quant_mode = perceptual.map(|p| p.quant_mode);
                 let encode_jpeg = |quality: u8| -> Result<Vec<u8>, anyhow::Error> {
                     let mut buf = Vec::new();
-                    let encoder = jpeg_encoder::Encoder::new(&mut buf, quality);
+                    let mut encoder = jpeg_encoder::Encoder::new(&mut buf, quality);
+                    match quant_mode {
+                        Some(perceptual::QuantMode::MsSsim) => {
+                            // P2-A：jpeg-encoder 内置 MS-SSIM 调优表（走 quality 缩放，安全）
+                            encoder.set_quantization_tables(
+                                jpeg_encoder::QuantizationTableType::CustomMsSsim,
+                                jpeg_encoder::QuantizationTableType::CustomMsSsim,
+                            );
+                        }
+                        Some(perceptual::QuantMode::Csf) => {
+                            // P2-B：自算 CSF 感知表。坑（§11.2-6）：Custom 表原值直用、
+                            // 不做 quality 缩放 → 必须在生成时按 quality 自行缩放
+                            let (luma, chroma) = perceptual::csf_quant_tables(quality);
+                            encoder.set_quantization_tables(
+                                jpeg_encoder::QuantizationTableType::Custom(Box::new(luma)),
+                                jpeg_encoder::QuantizationTableType::Custom(Box::new(chroma)),
+                            );
+                        }
+                        _ => {} // Standard / 非感知模式：v4.1.0 默认 Annex-K 表
+                    }
                     encoder
                         .encode(
                             &rgb_buf[..],
@@ -426,7 +511,11 @@ impl Processor {
                 };
 
                 if let Some(limit) = limit_bytes {
-                    let current_q = self.config.quality;
+                    let current_q = match perceptual {
+                        Some(p) => self.config.quality.min(p.quality_ceil),
+                        None => self.config.quality,
+                    };
+                    pm.final_quality = current_q;
                     let data = encode_jpeg(current_q)?;
 
                     if data.len() <= limit {
@@ -445,6 +534,7 @@ impl Processor {
                             if let Ok(data) = encode_jpeg(mid) {
                                 if data.len() <= limit {
                                     best_data = data;
+                                    pm.final_quality = mid;
                                     low = mid + 1;
                                 } else {
                                     if mid == 0 {
@@ -461,10 +551,30 @@ impl Processor {
                             result_data = best_data;
                         } else {
                             result_data = encode_jpeg(1)?;
+                            pm.final_quality = 1;
                         }
                     }
                 } else {
-                    result_data = encode_jpeg(self.config.quality)?;
+                    let q = match perceptual {
+                        Some(p) => self.config.quality.min(p.quality_ceil),
+                        None => self.config.quality,
+                    };
+                    pm.final_quality = q;
+                    result_data = encode_jpeg(q)?;
+                }
+                pm.encode_ms = t_encode.elapsed().as_millis() as u64;
+
+                // 感知指标：解码输出 JPG，与「降采样后参考帧」算 SSIM/PSNR
+                if let (Some(_), Some((ref_gray, gw, gh))) = (perceptual, reference_gray.as_ref())
+                {
+                    if let Ok(decoded) = image::load_from_memory(&result_data) {
+                        let (out_gray, ow, oh) = perceptual::to_gray(&decoded);
+                        if ow == *gw && oh == *gh {
+                            pm.ssim_vs_source =
+                                perceptual::ssim_gray(ref_gray, &out_gray, *gw, *gh);
+                            pm.psnr_vs_source = perceptual::psnr_gray(ref_gray, &out_gray);
+                        }
+                    }
                 }
 
                 if extension == "jpg" || extension == "jpeg" {
@@ -474,7 +584,7 @@ impl Processor {
         }
 
         fs::write(output_path, result_data)?;
-        Ok(())
+        Ok(perceptual.map(|_| pm))
     }
 }
 
@@ -535,6 +645,7 @@ pub fn app_config_to_process_config(
             enable_sharpening: config.enable_sharpening,
             sharpening_radius: config.sharpening_radius,
             sharpening_amount: config.sharpening_amount,
+            perceptual: None,
         },
         ProcessMode::HD => ProcessConfig {
             mode: ProcessMode::HD,
@@ -550,6 +661,7 @@ pub fn app_config_to_process_config(
             enable_sharpening: config.enable_sharpening,
             sharpening_radius: config.sharpening_radius,
             sharpening_amount: config.sharpening_amount,
+            perceptual: None,
         },
         ProcessMode::Custom => ProcessConfig {
             mode: ProcessMode::Custom,
@@ -565,6 +677,7 @@ pub fn app_config_to_process_config(
             enable_sharpening: config.enable_sharpening,
             sharpening_radius: config.sharpening_radius,
             sharpening_amount: config.sharpening_amount,
+            perceptual: None,
         },
     }
 }
@@ -577,7 +690,7 @@ pub fn app_config_to_process_config(
 ///
 /// 使用简单但有效的肤色检测算法
 /// 返回值：0.0-1.0，值越高越可能是肤色
-fn is_skin_color(r: u8, g: u8, b: u8) -> f32 {
+pub(crate) fn is_skin_color(r: u8, g: u8, b: u8) -> f32 {
     // RGB 转 YCbCr 色彩空间
     let _y = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
     let cb = -0.1687 * r as f32 - 0.3313 * g as f32 + 0.5 * b as f32 + 128.0;
@@ -602,7 +715,7 @@ fn is_skin_color(r: u8, g: u8, b: u8) -> f32 {
 /// 检测图像中肤色区域比例
 ///
 /// 返回值：0.0-1.0，表示图像中肤色区域的比例
-fn estimate_skin_ratio(image: &image::DynamicImage) -> f32 {
+pub(crate) fn estimate_skin_ratio(image: &image::DynamicImage) -> f32 {
     let rgba = image.to_rgba8();
     let (width, height) = rgba.dimensions();
 
@@ -942,7 +1055,7 @@ fn apply_usm_sharpen(
 /// - 使用可分离卷积：O(n²) → O(2n)
 /// - 先水平卷积，再垂直卷积
 /// - 性能提升 10 倍以上
-fn gaussian_blur(
+pub(crate) fn gaussian_blur(
     image: &ImageBuffer<Rgba<u8>, Vec<u8>>,
     sigma: f32,
 ) -> ImageBuffer<Rgba<u8>, Vec<u8>> {

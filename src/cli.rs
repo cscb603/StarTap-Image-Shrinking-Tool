@@ -136,6 +136,19 @@ pub struct Cli {
     #[arg(long)]
     pub self_check: bool,
 
+    // ========== v4.2.0-exp 感知压缩（仅 CLI/AI 开放，GUI 锁死 v4.1.0） ==========
+    /// 开启感知压缩模式：降噪+显著性锐化+感知量化表（默认关，旧行为完全不变）
+    #[arg(long)]
+    pub perceptual: bool,
+
+    /// 降噪强度 0-100（默认 25，仅 --perceptual 生效；JPG 输入自动跳过降噪防块效应）
+    #[arg(long, value_name = "0-100", default_value_t = 25)]
+    pub denoise_strength: u8,
+
+    /// 锐化焦点：auto=显著性检测（主体自动识别），center=中心权重
+    #[arg(long, value_enum, default_value = "auto")]
+    pub focus_mode: CliFocusMode,
+
     #[arg(value_name = "FILE/DIR")]
     pub positional: Vec<PathBuf>,
 }
@@ -157,6 +170,21 @@ pub enum CliOutputFormat {
 pub enum CliColorSpace {
     Keep,
     SRgb,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CliFocusMode {
+    Auto,
+    Center,
+}
+
+impl From<CliFocusMode> for rust_image_compressor::perceptual::FocusMode {
+    fn from(m: CliFocusMode) -> Self {
+        match m {
+            CliFocusMode::Auto => Self::Auto,
+            CliFocusMode::Center => Self::Center,
+        }
+    }
 }
 
 // ============================================================================
