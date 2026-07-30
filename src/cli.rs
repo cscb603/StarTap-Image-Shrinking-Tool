@@ -168,6 +168,10 @@ pub struct Cli {
     #[arg(long, value_enum)]
     pub platform: Option<CliPlatform>,
 
+    /// 色彩子采样（v4.3.0）：420=照片(默认,省~1/3码率) / 444=截图文字(防文字模糊) / 422=平衡
+    #[arg(long)]
+    pub subsampling: Option<String>,
+
     /// 覆盖平台默认体积安全线（KB）：触发质量二分搜索压到线内，防止微信/小红书/IG 二次重压
     #[arg(long)]
     pub target_budget_kb: Option<u32>,
@@ -376,6 +380,8 @@ pub struct JsonInput {
     pub usage_mode: Option<String>,
     /// 画质模式：perceptual(小而美感知压缩) / normal(普通标准压缩)
     pub quality_mode: Option<String>,
+    /// 色彩子采样：420=照片(默认) / 444=截图文字 / 422=平衡
+    pub subsampling: Option<String>,
 }
 
 // ============================================================================
@@ -971,6 +977,11 @@ impl Cli {
                 .platform
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_else(|| "wechat".to_string()),
+            // v4.3.0：色彩子采样（默认 420 照片；截图文字可切 444 防模糊）
+            subsampling: self
+                .subsampling
+                .clone()
+                .unwrap_or_else(|| "420".to_string()),
         };
         // 平台预设自动填长边/体积/Q 并强制 sRGB（§2）。显式 --target-budget-kb 覆盖预设体积线。
         // --usage-mode social 但没给 --platform 时按默认 wechat 预设（与 GUI 默认一致）。
