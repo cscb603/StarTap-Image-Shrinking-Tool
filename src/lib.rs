@@ -33,6 +33,8 @@ pub enum ProcessMode {
 pub enum OutputFormat {
     Jpeg,
     KeepOriginal,
+    /// v4.3.1：WebP 输出（网络分发/网页内嵌更省体积，支持透明通道）
+    WebP,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
@@ -71,6 +73,11 @@ pub struct AppConfig {
     // v4.3.0：色彩子采样（照片 420 省 ~1/3 码率 / 截图文字 444 防模糊 / 422 平衡）
     #[serde(default = "default_subsampling")]
     pub subsampling: String,
+    // v4.3.1：输出保结构（复刻源目录层级到 output_dir）/ 后缀可控（覆盖默认 _wx/_hd/_da，空串=无后缀）
+    #[serde(default)]
+    pub preserve_structure: bool,
+    #[serde(default)]
+    pub output_suffix: Option<String>,
 }
 
 fn default_usage_mode() -> String {
@@ -109,6 +116,8 @@ impl Default for AppConfig {
             quality_mode: "perceptual".to_string(),
             platform: "wechat".to_string(),
             subsampling: "420".to_string(),
+            preserve_structure: false,
+            output_suffix: None,
         }
     }
 }
@@ -132,6 +141,12 @@ pub struct ProcessConfig {
     pub perceptual: Option<PerceptualOptions>,
     // v4.3.0：色彩子采样（照片 420 / 截图 444 / 平衡 422）
     pub subsampling: String,
+    // v4.3.1：保结构输出（复刻源目录层级到 output_dir）
+    pub preserve_structure: bool,
+    // v4.3.1：结构基准目录（输出相对此目录复刻层级；由调用方计算注入）
+    pub structure_base: Option<PathBuf>,
+    // v4.3.1：后缀可控（覆盖默认 _wx/_hd/_da；None=默认，空串=无后缀）
+    pub output_suffix: Option<String>,
 }
 
 pub struct Processor {
@@ -145,6 +160,11 @@ impl Processor {
 
     /// 纯路径计算：给定输入文件，返回将要生成的输出路径（不创建目录、不做任何 IO 写入）。
     /// 供上层「续跑跳过」幂等判断复用，与 process_image 内部逻辑严格同源。
+    ///
+    /// v4.3.1 增强：
+    /// - `preserve_structure=true` 时，按 `structure_base` 复刻源目录相对层级到 output_dir（修 D2 拍平）。
+    /// - `output_suffix` 可覆盖默认 `_wx/_hd/_da`；空串=无后缀。`keep_original_name` 优先级最高（无后缀）。
+    /// - 支持 WebP 输出扩展名。
     pub fn expected_output_path(&self, input_path: &Path) -> PathBuf {
         let healed_path = path_self_healing(input_path);
         let file_stem = healed_path
@@ -158,35 +178,96 @@ impl Processor {
             .unwrap_or("")
             .to_lowercase();
 
-        let suffix = if self.config.mode == ProcessMode::WeChat {
-            "_wx"
-        } else if self.config.mode == ProcessMode::HD {
-            "_hd"
-        } else {
-            "_da"
+        let output_ext = match self.config.output_format {
+            OutputFormat::Jpeg => "jpg",
+            OutputFormat::WebP => "webp",
+            OutputFormat::KeepOriginal => match extension.as_str() {
+                "png" => "png",
+                "webp" => "webp",
+                _ => "jpg",
+            },
         };
 
-        let output_dir = self
+        let base_out = self
             .config
             .output_dir
             .clone()
             .unwrap_or_else(|| healed_path.parent().unwrap_or(Path::new(".")).to_path_buf());
 
-        let output_ext = match self.config.output_format {
-            OutputFormat::Jpeg => "jpg",
-            OutputFormat::KeepOriginal => match extension.as_str() {
-                "png" => "png",
-                _ => "jpg",
-            },
+        // 保结构：把输入相对 structure_base 的父目录层级拼到输出目录后
+        let rel_parent = if self.config.preserve_structure {
+            self.config
+                .structure_base
+                .as_ref()
+                .and_then(|b| {
+                    healed_path
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .strip_prefix(b)
+                        .ok()
+                })
+                .unwrap_or_else(|| Path::new(""))
+        } else {
+            Path::new("")
+        };
+        let out_dir = base_out.join(rel_parent);
+
+        let suffix = if self.config.keep_original_name {
+            String::new()
+        } else if let Some(s) = &self.config.output_suffix {
+            if s.is_empty() {
+                String::new()
+            } else {
+                format!("_{}", s)
+            }
+        } else {
+            match self.config.mode {
+                ProcessMode::WeChat => "_wx".to_string(),
+                ProcessMode::HD => "_hd".to_string(),
+                _ => "_da".to_string(),
+            }
         };
 
         if self.config.overwrite {
             healed_path.to_path_buf()
         } else if self.config.keep_original_name {
-            output_dir.join(format!("{}.{}", file_stem, output_ext))
+            out_dir.join(format!("{}.{}", file_stem, output_ext))
         } else {
-            output_dir.join(format!("{}{}.{}", file_stem, suffix, output_ext))
+            out_dir.join(format!("{}{}.{}", file_stem, suffix, output_ext))
         }
+    }
+
+    /// 透传路径：不支持的格式（如 SVG）原样复制到 output_dir（保持保结构层级、不改名不改扩展名）。
+    /// 与 expected_output_path 仅在「不加后缀」上有区别，便于 passthrough 模式 1:1 映射源文件名。
+    pub fn passthrough_path(&self, input_path: &Path) -> PathBuf {
+        let healed_path = path_self_healing(input_path);
+        let base_out = self
+            .config
+            .output_dir
+            .clone()
+            .unwrap_or_else(|| healed_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+        let rel_parent = if self.config.preserve_structure {
+            self.config
+                .structure_base
+                .as_ref()
+                .and_then(|b| {
+                    healed_path
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .strip_prefix(b)
+                        .ok()
+                })
+                .unwrap_or_else(|| Path::new(""))
+        } else {
+            Path::new("")
+        };
+        let out_dir = base_out.join(rel_parent);
+        let name = healed_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        out_dir.join(name)
     }
 
     pub fn process_image(&self, input_path: &Path) -> Result<PathBuf> {
@@ -218,17 +299,11 @@ impl Processor {
         ];
         let is_raw = raw_extensions.contains(&extension.as_str());
 
-        let output_dir = self
-            .config
-            .output_dir
-            .clone()
-            .unwrap_or_else(|| healed_path.parent().unwrap_or(Path::new(".")).to_path_buf());
-        if !output_dir.exists() {
-            fs::create_dir_all(&output_dir)?;
-        }
-
-        // 输出路径与 expected_output_path 严格同源
+        // 输出路径与 expected_output_path 严格同源；按最终输出路径的父目录建目录（兼容保结构子目录）
         let output_path = self.expected_output_path(&healed_path);
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
         let metrics: Option<PerceptualMetrics>;
 
@@ -408,6 +483,9 @@ impl Processor {
     ) -> Result<Option<PerceptualMetrics>> {
         let img = load_image_safe(input_path)?;
         let (width, height) = img.dimensions();
+        // v4.3.1：提前判定源图是否含 alpha 通道（PNG/WebP 透明图）。JPEG 输出不支持透明，
+        // 含 alpha 时把透明区域填白底（修 D4：透明 PNG→JPEG 丢透明变黑）。
+        let src_has_alpha = img.color().has_alpha();
         let perceptual = self.config.perceptual.as_ref();
         let mut pm = PerceptualMetrics::default();
 
@@ -495,8 +573,10 @@ impl Processor {
 
         let output_ext = match self.config.output_format {
             OutputFormat::Jpeg => "jpg",
+            OutputFormat::WebP => "webp",
             OutputFormat::KeepOriginal => match extension {
                 "png" => "png",
+                "webp" => "webp",
                 _ => "jpg",
             },
         };
@@ -520,9 +600,12 @@ impl Processor {
             }
             _ => {
                 let t_encode = std::time::Instant::now();
-                // 转换为 RGB 格式
-                let rgb_img = dynamic_img.to_rgb8();
-                let rgb_buf = rgb_img.as_raw();
+                // 转换为 RGB 格式；JPEG 不支持透明 → 含 alpha 的源图先按白底合成（修 D4 透明丢失）
+                let rgb_buf: Vec<u8> = if src_has_alpha {
+                    flatten_rgba8_to_rgb(dynamic_img.to_rgba8())
+                } else {
+                    dynamic_img.to_rgb8().into_raw()
+                };
 
                 // 感知模式：budget_kb 覆盖 target_kb；质量上限 quality_ceil
                 let effective_target_kb = match perceptual {
@@ -559,7 +642,7 @@ impl Processor {
                         _ => {} // 非感知模式：mozjpeg 默认 Annex-K 表（v4.1.0 行为等价）
                     }
                     encoder
-                        .encode_rgb(rgb_buf, new_width, new_height)
+                        .encode_rgb(&rgb_buf, new_width, new_height)
                         .map_err(|e| anyhow::anyhow!("JPEG encoding failed: {}", e))
                 };
 
@@ -741,6 +824,10 @@ pub fn app_config_to_process_config(
         output_format: config.output_format,
         color_space: config.color_space,
         subsampling: config.subsampling.clone(),
+        // v4.3.1：保结构 / 后缀
+        preserve_structure: config.preserve_structure,
+        structure_base: None, // 由调用方（CLI/JSON 入口）计算注入
+        output_suffix: config.output_suffix.clone(),
         // 摄影级优化
         enable_sharpening: config.enable_sharpening,
         sharpening_radius: config.sharpening_radius,
@@ -1323,4 +1410,21 @@ fn load_image_mmap(input_path: &Path) -> Result<image::DynamicImage> {
     let bytes = fs::read(input_path)?;
     image::load_from_memory(&bytes)
         .map_err(|e| anyhow::anyhow!("Failed to decode from memory: {}", e))
+}
+
+/// v4.3.1（修 D4）：把 RGBA 图像按白底合成转 RGB。
+/// 用于 JPEG 等不支持透明的输出格式，避免透明区域变黑或丢失透明度信息。
+/// alpha=255（不透明）时等价于直接取 RGB，不会产生色偏。
+fn flatten_rgba8_to_rgb(img: image::RgbaImage) -> Vec<u8> {
+    let (w, h) = img.dimensions();
+    let mut out = Vec::with_capacity((w * h * 3) as usize);
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        let alpha = a as f32 / 255.0;
+        let inv = 1.0 - alpha;
+        out.push((r as f32 * alpha + 255.0 * inv) as u8);
+        out.push((g as f32 * alpha + 255.0 * inv) as u8);
+        out.push((b as f32 * alpha + 255.0 * inv) as u8);
+    }
+    out
 }

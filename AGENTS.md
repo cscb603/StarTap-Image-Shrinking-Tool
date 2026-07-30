@@ -20,7 +20,7 @@
 
 ## 标准 JSON 信封（Agent-First 规范）
 
-stdout **只输出以下 JSON**，stderr 放日志/进度/警告。退出码：0=正常，1=有失败，2=参数错。
+stdout **只输出以下 JSON**，stderr 放日志/进度/警告。退出码：0=正常（含隐藏文件跳过/透传），1=有真正失败（不支持且未透传/解码损坏/权限），2=参数错。
 
 ```json
 {
@@ -37,10 +37,17 @@ stdout **只输出以下 JSON**，stderr 放日志/进度/警告。退出码：0
         "output": "照片_da.jpg",
         "success": true,
         "error": null,
+        "error_type": null,
+        "skipped": null,
+        "passthrough": null,
         "original_size": 5000000,
         "compressed_size": 1200000,
         "compression_ratio": 4.17
       }
+    ],
+    "skipped": 0,
+    "manifest": [
+      {"input": "照片.jpg", "output": "照片_da.jpg", "status": "compressed"}
     ]
   },
   "warnings": [],
@@ -90,7 +97,10 @@ stdout **只输出以下 JSON**，stderr 放日志/进度/警告。退出码：0
   "dry_run": false,
   "force": false,
   "jsonl": false,
-  "max_workers": null
+  "max_workers": null,
+  "preserve_structure": false,
+  "output_suffix": null,
+  "passthrough_unsupported": false
 }
 ```
 
@@ -106,7 +116,7 @@ stdout **只输出以下 JSON**，stderr 放日志/进度/警告。退出码：0
 | `target_kb` | `number` | `0` | 目标体积 KB，0=不限 |
 | `overwrite` | `boolean` | `false` | 覆盖原文件 |
 | `keep_original_name` | `boolean` | `false` | 保留原文件名（不加 `_da` 后缀） |
-| `output_format` | `string` | `"jpeg"` | `"jpeg"` / `"original"` |
+| `output_format` | `string` | `"jpeg"` | `"jpeg"` / `"original"` / `"webp"` |
 | `output_dir` | `string` | `null` | 输出目录路径，不指定时默认 `./compressed/` |
 
 ### 摄影级优化参数
@@ -135,13 +145,25 @@ stdout **只输出以下 JSON**，stderr 放日志/进度/警告。退出码：0
 | `jsonl` | `boolean` | `false` | 流式 JSONL：每个文件一行 JSON，末尾追加汇总信封 |
 | `max_workers` | `number` | `null` | 最大并行 worker 数（默认=CPU 核心数），大批量/共享服务器可限流 |
 
+### v4.3.1 工程成熟度参数（新增）
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `preserve_structure` | `boolean` | `false` | 输出时保留源目录相对路径（默认拍平到 `output_dir`）；批量搬运多层级相册时复刻层级 |
+| `output_suffix` | `string` | `null` | 自定义输出文件名后缀（覆盖默认 `_wx/_hd/_da`）；空串 `""` = 无后缀（`keep_original_name` 优先级更高） |
+| `passthrough_unsupported` | `boolean` | `false` | 不支持的格式（如 SVG）原样透传复制到输出目录，不压缩、不报失败（结果 `status:"passthrough"`） |
+
+> 对应 CLI 旗标：`--preserve-structure` / `--output-suffix` / `--passthrough-unsupported`。
+
 ## 错误语义
 
-- **退出码 0** = 全部成功，可正常继续
-- **退出码 1** = 部分或全部失败，检查 `errors` 数组
+- **退出码 0** = 全部成功，可正常继续（含 `._*` 系统隐藏文件归类为 `skipped`、不支持格式在 `--passthrough-unsupported` 下透传，均不计入失败）
+- **退出码 1** = 部分或全部真正失败，检查 `errors` 数组
 - **退出码 2** = 参数错误，应修正参数后重试（不要盲目重试）
 - 非 retryable 错误不要重试（如"RAW 格式不支持"、"路径不存在"）
 - 网络/IO 类临时错误可重试（如"Failed to load image"）
+- **`error_type` 细分**（失败时）：`unsupported`(格式不支持) / `corrupt`(解码损坏) / `permission`(权限) / `skipped`(隐藏文件跳过) / `passthrough`(透传) / `error`(其他)。便于 agent 决策重试还是跳过。
+- **`data.skipped`**：跳过 / 透传的数量（均不计入 `failed`）；**`data.manifest`**：输入→输出映射清单（含未压缩项），便于 agent 回映射源目录。
 
 ## 能力探测（--capabilities）
 
@@ -165,7 +187,7 @@ AI 调用前可用 `--capabilities` 获取当前版本支持的完整参数 sche
 | `--target-kb` | 目标体积 KB |
 | `--overwrite` | 覆盖原文件 |
 | `--keep-original-name` | 保留原文件名 |
-| `--output-format` | `jpeg` / `keep-original` |
+| `--output-format` | `jpeg` / `keep-original` / `webp`（webp 更省体积、支持透明） |
 | `--json` | JSON 模式（stdin 输入 / 输出 JSON 信封） |
 | `--json-in` | 直接传 JSON 字符串（AI 最稳） |
 | `--dry-run` | 预演模式，不执行压缩 |
@@ -181,6 +203,10 @@ AI 调用前可用 `--capabilities` 获取当前版本支持的完整参数 sche
 | `--jsonl` | 流式 JSONL：逐行 JSON + 末尾汇总信封 |
 | `--max-workers` | 最大并行 worker 数（默认=CPU 核心数） |
 | `--self-check` | 环境自检，内置测试图走完整管线，输出健康报告 |
+| `--preserve-structure` | 输出时保留源目录相对路径（默认拍平） |
+| `--output-suffix` | 自定义输出文件名后缀（覆盖默认 `_wx/_hd/_da`；空串=无后缀） |
+| `--passthrough-unsupported` | 不支持格式（如 SVG）原样透传，不报失败 |
+| `--output-format webp` | 输出 WebP（更省体积、支持透明） |
 
 ## 工业级调度（v4.1.0 新增）
 
@@ -190,4 +216,4 @@ AI 调用前可用 `--capabilities` 获取当前版本支持的完整参数 sche
 - **stderr 分级日志**：日志走 stderr，统一前缀 `[INFO]` / `[WARN]` / `[ERROR]`；stdout 只放 JSON / JSONL 数据，互不污染，AI 可零分支解析。
 - **环境自检（`--self-check`）**：内置生成测试图 → 完整压缩管线 → 逐项校验（pipeline / output_size / decode_output）→ 输出健康报告。接入新机器/新版本前先跑一遍验证二进制健康。
 
-> 当前版本：**v4.1.0**（schema_version `1.0` 信封 / `1.1` capabilities）。AI 接入前建议先 `--capabilities` 探测，再 `--self-check` 验证。
+> 当前版本：**v4.3.1**（schema_version `1.0` 信封 / `1.1` capabilities）。AI 接入前建议先 `--capabilities` 探测，再 `--self-check` 验证。

@@ -172,6 +172,16 @@ pub struct Cli {
     #[arg(long)]
     pub subsampling: Option<String>,
 
+    /// 不支持的格式（如 SVG）原样透传复制到输出目录（不压缩、不报失败）。
+    /// 配合 --output-dir 使用，便于调用方无需预处理即可 1:1 搬运文件。
+    #[arg(long)]
+    pub passthrough_unsupported: bool,
+
+    /// 自定义输出文件名后缀（覆盖默认 _wx/_hd/_da）；空串表示无后缀。
+    /// 与 --keep-original-name 同时使用时本项无效（后者优先级更高）。
+    #[arg(long)]
+    pub output_suffix: Option<String>,
+
     /// 覆盖平台默认体积安全线（KB）：触发质量二分搜索压到线内，防止微信/小红书/IG 二次重压
     #[arg(long)]
     pub target_budget_kb: Option<u32>,
@@ -203,6 +213,7 @@ pub enum CliProcessMode {
 pub enum CliOutputFormat {
     Jpeg,
     KeepOriginal,
+    WebP,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -382,6 +393,14 @@ pub struct JsonInput {
     pub quality_mode: Option<String>,
     /// 色彩子采样：420=照片(默认) / 444=截图文字 / 422=平衡
     pub subsampling: Option<String>,
+
+    // ========== v4.3.1 工程成熟度提升 ==========
+    /// 输出时保留源目录相对路径（默认拍平到 output_dir）
+    pub preserve_structure: Option<bool>,
+    /// 自定义输出后缀（覆盖默认 _wx/_hd/_da；空串=无后缀）
+    pub output_suffix: Option<String>,
+    /// 不支持的格式原样透传（不压缩、不报失败），如 SVG
+    pub passthrough_unsupported: Option<bool>,
 }
 
 // ============================================================================
@@ -409,7 +428,23 @@ pub struct JsonOutputData {
     pub total: usize,
     pub completed: usize,
     pub failed: usize,
+    /// v4.3.1：跳过（隐藏文件）或透传（不支持但已复制）的数量，不计入 failed
+    pub skipped: usize,
     pub results: Vec<FileResult>,
+    /// v4.3.1：输入→输出映射清单（含未压缩项），便于 agent 回映射源目录
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub manifest: Vec<ManifestEntry>,
+}
+
+/// 输入→输出映射项（v4.3.1），便于调用方回映射源目录
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct ManifestEntry {
+    pub input: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    /// compressed | skipped | passthrough | failed
+    pub status: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -448,6 +483,13 @@ pub struct FileResult {
     /// 幂等续跑：输出已存在且未 --force 时跳过（success=true, skipped=true）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped: Option<bool>,
+    /// 错误分类（v4.3.1）：unsupported(格式不支持) / corrupt(解码损坏) / permission(权限) /
+    /// skipped(隐藏文件跳过) / passthrough(透传) / error(其他)。便于 agent 决策重试还是跳过。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    /// 透传模式（v4.3.1）：不支持的格式原样复制（success=true）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub passthrough: Option<bool>,
     /// v4.2.0-exp 感知压缩指标（perceptual=None 时缺省，向下兼容）；字段缺省不输出
     #[serde(skip_serializing_if = "Option::is_none")]
     pub perceptual: Option<PerceptualMetricsOut>,
@@ -571,7 +613,7 @@ pub fn build_capabilities() -> Capabilities {
                 "target_kb": {"type": "integer", "default": 0, "description": "目标体积 KB，0=不限"},
                 "overwrite": {"type": "boolean", "default": false, "description": "覆盖原文件"},
                 "keep_original_name": {"type": "boolean", "default": false, "description": "保留原文件名（不加后缀）"},
-                "output_format": {"type": "string", "enum": ["jpeg", "original"], "default": "jpeg", "description": "输出格式"},
+                "output_format": {"type": "string", "enum": ["jpeg", "original", "webp"], "default": "jpeg", "description": "输出格式（webp 更省体积、支持透明）"},
                 "output_dir": {"type": "string", "default": null, "description": "输出目录，未指定时默认 ./compressed/"},
                 "enable_sharpening": {"type": "boolean", "default": false, "description": "启用智能自适应锐化"},
                 "sharpening_radius": {"type": "number", "default": 1.0, "description": "锐化半径"},
@@ -592,7 +634,10 @@ pub fn build_capabilities() -> Capabilities {
                 "focus_mode": {"type": "string", "enum": ["auto", "center"], "default": "auto", "description": "锐化焦点：auto=显著性检测 / center=中心权重"},
                 "target_budget_kb": {"type": "integer", "default": null, "description": "覆盖平台默认体积安全线（KB），触发质量二分搜索"},
                 "quality_ceil": {"type": "integer", "min": 1, "max": 100, "default": 95, "description": "感知模式质量上限，防止过度堆质量爆体积"},
-                "platform": {"type": "string", "enum": ["wechat", "wechat-new", "xiaohongshu", "instagram"], "default": null, "description": "平台阈值预设，自动填长边/体积/Q 并强制 sRGB"}
+                "platform": {"type": "string", "enum": ["wechat", "wechat-new", "xiaohongshu", "instagram"], "default": null, "description": "平台阈值预设，自动填长边/体积/Q 并强制 sRGB"},
+                "preserve_structure": {"type": "boolean", "default": false, "description": "输出时保留源目录相对路径（默认拍平到 output_dir）"},
+                "output_suffix": {"type": "string", "default": null, "description": "自定义输出后缀（覆盖默认 _wx/_hd/_da；空串=无后缀）"},
+                "passthrough_unsupported": {"type": "boolean", "default": false, "description": "不支持的格式（如 SVG）原样透传复制，不报失败"}
             }
         }),
         cli_parameters: vec![
@@ -665,8 +710,8 @@ pub fn build_capabilities() -> Capabilities {
                 short: None,
                 kind: "STRING".into(),
                 default: "jpeg".into(),
-                description: "输出格式".into(),
-                available_values: Some(vec!["jpeg".into(), "keep-original".into()]),
+                description: "输出格式（webp 更省体积、支持透明）".into(),
+                available_values: Some(vec!["jpeg".into(), "keep-original".into(), "webp".into()]),
             },
             CliParamDoc {
                 name: "--json".into(),
@@ -746,6 +791,22 @@ pub fn build_capabilities() -> Capabilities {
                 kind: "FLAG".into(),
                 default: "false".into(),
                 description: "输出时保留源目录相对路径".into(),
+                available_values: None,
+            },
+            CliParamDoc {
+                name: "--passthrough-unsupported".into(),
+                short: None,
+                kind: "FLAG".into(),
+                default: "false".into(),
+                description: "不支持的格式（如 SVG）原样透传复制到输出目录，不报失败".into(),
+                available_values: None,
+            },
+            CliParamDoc {
+                name: "--output-suffix".into(),
+                short: None,
+                kind: "STRING".into(),
+                default: "(无，用默认 _wx/_hd/_da)".into(),
+                description: "自定义输出文件名后缀（覆盖默认 _wx/_hd/_da；空串=无后缀）".into(),
                 available_values: None,
             },
             CliParamDoc {
@@ -878,7 +939,9 @@ pub fn build_capabilities() -> Capabilities {
                 "total": 5,
                 "completed": 5,
                 "failed": 0,
-                "results": [{"input": "照片.jpg", "output": "照片_da.jpg", "success": true, "error": null, "original_size": 5000000, "compressed_size": 1200000, "compression_ratio": 4.17}]
+                "skipped": 0,
+                "results": [{"input": "照片.jpg", "output": "照片_da.jpg", "success": true, "error": null, "error_type": null, "original_size": 5000000, "compressed_size": 1200000, "compression_ratio": 4.17}],
+                "manifest": [{"input": "照片.jpg", "output": "照片_da.jpg", "status": "compressed"}]
             },
             "warnings": [],
             "errors": [],
@@ -889,8 +952,12 @@ pub fn build_capabilities() -> Capabilities {
             "RAW 格式仅在 macOS 支持；Windows 会明确报错".to_string(),
             "目录默认递归（最深 20 层），--no-recursive 仅当前层".to_string(),
             "未指定 --output-dir 时默认输出到 ./compressed/ 目录".to_string(),
-            "退出码：0=正常, 1=有失败, 2=参数错误".to_string(),
+            "退出码：0=正常（含隐藏文件跳过/透传）, 1=有真正失败（不支持且未透传/解码损坏/权限）, 2=参数错误".to_string(),
             "stdout 只输出 JSON/JSONL 数据，stderr 放 [INFO]/[WARN]/[ERROR] 分级日志".to_string(),
+            "v4.3.1：系统隐藏文件(._*) 归类为 skipped（不计入 failed、退出码仍为 0），不会误触发重试".to_string(),
+            "v4.3.1：--output-format webp 输出 WebP（更省体积、支持透明）；透明 PNG→JPEG 自动填白底（修透明丢失）".to_string(),
+            "v4.3.1：--preserve-structure 输出时复刻源目录层级；--output-suffix 控制后缀；--passthrough-unsupported 让 SVG 等原样透传".to_string(),
+            "v4.3.1：FileResult 新增 error_type(skipped/unsupported/corrupt/permission/passthrough/error)，data 新增 skipped 计数与 manifest 映射清单".to_string(),
             "幂等续跑：输出文件已存在时默认跳过（结果标记 skipped:true），--force 强制重压"
                 .to_string(),
             "大批量建议 --jsonl 流式输出：逐行 JSON 可实时采集进度，中断也保留已处理记录"
@@ -920,6 +987,7 @@ impl From<CliOutputFormat> for OutputFormat {
         match format {
             CliOutputFormat::Jpeg => OutputFormat::Jpeg,
             CliOutputFormat::KeepOriginal => OutputFormat::KeepOriginal,
+            CliOutputFormat::WebP => OutputFormat::WebP,
         }
     }
 }
@@ -982,6 +1050,9 @@ impl Cli {
                 .subsampling
                 .clone()
                 .unwrap_or_else(|| "420".to_string()),
+            // v4.3.1：保结构 / 后缀可控
+            preserve_structure: self.preserve_structure,
+            output_suffix: self.output_suffix.clone(),
         };
         // 平台预设自动填长边/体积/Q 并强制 sRGB（§2）。显式 --target-budget-kb 覆盖预设体积线。
         // --usage-mode social 但没给 --platform 时按默认 wechat 预设（与 GUI 默认一致）。
@@ -1016,6 +1087,10 @@ pub fn build_envelope(results: &[FileResult], start: std::time::Instant) -> Json
     let total = results.len();
     let completed = results.iter().filter(|r| r.success).count();
     let failed = total - completed;
+    let skipped = results
+        .iter()
+        .filter(|r| r.skipped.unwrap_or(false) || r.passthrough.unwrap_or(false))
+        .count();
     let original_bytes: u64 = results.iter().filter_map(|r| r.original_size).sum();
     let compressed_bytes: u64 = results.iter().filter_map(|r| r.compressed_size).sum();
     let bytes_saved = original_bytes.saturating_sub(compressed_bytes);
@@ -1037,7 +1112,9 @@ pub fn build_envelope(results: &[FileResult], start: std::time::Instant) -> Json
             total,
             completed,
             failed,
+            skipped,
             results: results.to_vec(),
+            manifest: build_manifest(results),
         },
         warnings: vec![],
         errors: vec![],
@@ -1049,4 +1126,27 @@ pub fn build_envelope(results: &[FileResult], start: std::time::Instant) -> Json
             total_time_ms: start.elapsed().as_millis() as u64,
         },
     }
+}
+
+/// 由 results 构建输入→输出映射清单（v4.3.1）
+fn build_manifest(results: &[FileResult]) -> Vec<ManifestEntry> {
+    results
+        .iter()
+        .map(|r| {
+            let status = if !r.success {
+                "failed".to_string()
+            } else if r.passthrough.unwrap_or(false) {
+                "passthrough".to_string()
+            } else if r.skipped.unwrap_or(false) {
+                "skipped".to_string()
+            } else {
+                "compressed".to_string()
+            };
+            ManifestEntry {
+                input: r.input.clone(),
+                output: r.output.clone(),
+                status,
+            }
+        })
+        .collect()
 }

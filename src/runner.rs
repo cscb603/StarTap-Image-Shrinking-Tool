@@ -171,6 +171,20 @@ pub(crate) fn run_cli(cli: &Cli) -> Result<()> {
         files.retain(|f| !match_patterns(f, &patterns));
     }
 
+    // v4.3.1：透传模式——把「不支持格式」的被拒项转成待处理项（原样复制，不报错）
+    let passthrough = cli.passthrough_unsupported;
+    if passthrough {
+        let mut still_rejected = Vec::new();
+        for (p, why) in rejected.drain(..) {
+            if why == "不是支持的图片格式" {
+                files.push(PathBuf::from(p));
+            } else {
+                still_rejected.push((p, why));
+            }
+        }
+        rejected = still_rejected;
+    }
+
     // 如果是 JSON 模式
     if cli.json {
         // stdin 挂死修复（P0）：只有「没给任何文件/目录参数」时才读 stdin。
@@ -282,11 +296,18 @@ pub(crate) fn run_cli(cli: &Cli) -> Result<()> {
                     .join("compressed"),
             )
         });
+    // v4.3.1：保结构输出——以所有输入的最长公共祖先为层级基准
+    let structure_base = if cli.preserve_structure {
+        common_ancestor(&files)
+    } else {
+        None
+    };
     let mut process_config = app_config_to_process_config(&app_config, effective_output_dir);
+    process_config.structure_base = structure_base;
     process_config.perceptual = perceptual_options_from_cli(cli);
     let processor = Processor::new(process_config);
 
-    // 分桶调度（与 GUI 同款 OOM 护栏）：小图并行、大图串行，统一走 process_one_file
+    // 分桶调度（与 GUI 同款 OOM 护栏）：小图并行、大图串行，统一走 process_or_passthrough（隐藏跳过/透传收口）
     let quiet = cli.quiet;
     let force = cli.force;
     let overwrite = cli.overwrite;
@@ -295,7 +316,7 @@ pub(crate) fn run_cli(cli: &Cli) -> Result<()> {
         &files,
         |f| is_large_image(f),
         |file| {
-            let r = process_one_file(&processor, file, force, overwrite);
+            let r = process_or_passthrough(&processor, file, force, overwrite, passthrough);
             if jsonl {
                 emit_jsonl(&r);
             }
@@ -419,19 +440,26 @@ fn run_cli_with_json_output(cli: &Cli, files: &[PathBuf]) -> Result<()> {
                     .join("compressed"),
             )
         });
+    let structure_base = if cli.preserve_structure {
+        common_ancestor(files)
+    } else {
+        None
+    };
     let mut process_config = app_config_to_process_config(&app_config, effective_output_dir);
+    process_config.structure_base = structure_base;
     process_config.perceptual = perceptual_options_from_cli(cli);
     let processor = Processor::new(process_config);
 
     let force = cli.force;
     let jsonl = cli.jsonl;
     let overwrite = cli.overwrite;
-    // 分桶调度（与 GUI 同款 OOM 护栏）：小图并行、大图串行
+    let passthrough = cli.passthrough_unsupported;
+    // 分桶调度（与 GUI 同款 OOM 护栏）：小图并行、大图串行；统一走 process_or_passthrough（隐藏跳过/透传收口）
     let results: Vec<FileResult> = map_bucketed(
         files,
         |f| is_large_image(f),
         |file| {
-            let result = process_one_file(&processor, file, force, overwrite);
+            let result = process_or_passthrough(&processor, file, force, overwrite, passthrough);
             if jsonl {
                 // 流式 JSONL：每处理完一个文件立即输出一行（println! 自带行级锁）
                 emit_jsonl(&result);
@@ -514,10 +542,12 @@ fn process_one_file(
                 output: Some(expected.display().to_string().replace('\\', "/")),
                 success: true,
                 error: None,
+                error_type: None,
                 original_size,
                 compressed_size,
                 compression_ratio,
                 skipped: Some(true),
+                passthrough: None,
                 perceptual: build_perceptual_out(processor, None),
             };
         }
@@ -527,6 +557,12 @@ fn process_one_file(
     let (success, output, error, percept) = match processor.process_image_with_metrics(file) {
         Ok((output_path, m)) => (true, Some(output_path.display().to_string()), None, m),
         Err(e) => (false, None, Some(e.to_string()), None),
+    };
+    // v4.3.1：失败原因分类，便于 agent 决策重试还是跳过
+    let error_type = if success {
+        None
+    } else {
+        Some(classify_error(error.as_deref().unwrap_or("")))
     };
 
     let compressed_size = output
@@ -544,11 +580,137 @@ fn process_one_file(
         output: output.map(|p| p.replace('\\', "/")),
         success,
         error,
+        error_type,
         original_size,
         compressed_size,
         compression_ratio,
         skipped: None,
+        passthrough: None,
         perceptual,
+    }
+}
+
+/// v4.3.1（修 D1）：判定是否为 macOS 系统隐藏资源叉文件（._ 前缀）。
+/// 这类文件会被 `is_supported_image` 误判为可压缩图片（.jpg 扩展名），
+/// 必须归类为 skipped 而非 failed，否则会污染退出码、误导自动化重试。
+fn is_system_hidden(path: &Path) -> bool {
+    path.file_name()
+        .map(|n| n.to_string_lossy().starts_with("._"))
+        .unwrap_or(false)
+}
+
+/// v4.3.1：把处理失败原因分类为结构化 error_type，便于 agent 决策重试还是跳过。
+fn classify_error(msg: &str) -> String {
+    if msg.contains("权限") || msg.contains("permission") || msg.contains("Permission") || msg.contains("Access") {
+        "permission".to_string()
+    } else if msg.contains("decode")
+        || msg.contains("load")
+        || msg.contains("Unsupported format")
+        || msg.contains("不支持")
+        || msg.contains("图像")
+        || msg.contains("解码")
+    {
+        "corrupt".to_string()
+    } else {
+        "error".to_string()
+    }
+}
+
+/// v4.3.1（修 D2）：计算多个输入路径的最长公共祖先目录，
+/// 作为保结构输出的层级基准（structure_base）。
+fn common_ancestor(paths: &[PathBuf]) -> Option<PathBuf> {
+    if paths.is_empty() {
+        return None;
+    }
+    let comps: Vec<Vec<std::path::Component>> = paths
+        .iter()
+        .map(|p| p.components().collect())
+        .collect();
+    let min_len = comps.iter().map(|c| c.len()).min().unwrap_or(0);
+    let mut prefix: Vec<std::path::Component> = Vec::new();
+    for i in 0..min_len {
+        let c = comps[0][i];
+        if comps.iter().all(|cs| cs.get(i) == Some(&c)) {
+            prefix.push(c);
+        } else {
+            break;
+        }
+    }
+    let path: PathBuf = prefix.iter().collect();
+    if path.is_dir() || prefix.is_empty() {
+        Some(path)
+    } else {
+        path.parent().map(|p| p.to_path_buf())
+    }
+}
+
+/// v4.3.1：不支持格式的原样透传复制（passthrough）。
+fn copy_passthrough(processor: &Processor, file: &Path, force: bool) -> Result<String> {
+    let out = processor.passthrough_path(file);
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if out.exists() && !force {
+        // 幂等续跑：已存在则跳过复制
+        return Ok(out.display().to_string().replace('\\', "/"));
+    }
+    fs::copy(file, &out)?;
+    Ok(out.display().to_string().replace('\\', "/"))
+}
+
+/// v4.3.1：单文件统一入口（CLI-JSON / AI-JSON 共用）：
+/// 隐藏文件(._*)→skipped；不支持格式→passthrough 复制或 failed(unsupported)；其余交给 process_one_file。
+/// 这是「隐藏文件不误报失败、退出码稳定」的核心收口点。
+fn process_or_passthrough(
+    processor: &Processor,
+    file: &Path,
+    force: bool,
+    overwrite: bool,
+    passthrough: bool,
+) -> FileResult {
+    let file_str = file.display().to_string().replace('\\', "/");
+
+    // D1-FIX：系统隐藏文件 → skipped（成功、不计 failed、退出码 0）
+    if is_system_hidden(file) {
+        return FileResult {
+            input: file_str,
+            success: true,
+            skipped: Some(true),
+            error_type: Some("skipped".to_string()),
+            ..Default::default()
+        };
+    }
+
+    if !is_supported_image(file) {
+        if passthrough {
+            match copy_passthrough(processor, file, force) {
+                Ok(out) => FileResult {
+                    input: file_str,
+                    output: Some(out),
+                    success: true,
+                    passthrough: Some(true),
+                    error_type: Some("passthrough".to_string()),
+                    ..Default::default()
+                },
+                Err(e) => FileResult {
+                    input: file_str,
+                    success: false,
+                    error_type: Some("error".to_string()),
+                    error: Some(format!("透传复制失败: {}", e)),
+                    ..Default::default()
+                },
+            }
+        } else {
+            FileResult {
+                input: file_str,
+                success: false,
+                error_type: Some("unsupported".to_string()),
+                error: Some("不支持的图片格式".to_string()),
+                ..Default::default()
+            }
+        }
+    } else {
+        process_one_file(processor, file, force, overwrite)
     }
 }
 
@@ -912,6 +1074,7 @@ pub(crate) fn run_json_mode(json_input: &JsonInput) -> Result<()> {
         match f.to_lowercase().as_str() {
             "jpeg" | "jpg" => app_config.output_format = OutputFormat::Jpeg,
             "original" | "keep" => app_config.output_format = OutputFormat::KeepOriginal,
+            "webp" => app_config.output_format = OutputFormat::WebP, // v4.3.1：JSON 路径 webp 输出
             _ => {}
         }
     }
@@ -944,6 +1107,13 @@ pub(crate) fn run_json_mode(json_input: &JsonInput) -> Result<()> {
         if s == "444" || s == "422" || s == "420" {
             app_config.subsampling = s;
         }
+    }
+    // v4.3.1：保结构 / 后缀可控
+    if let Some(ps) = json_input.preserve_structure {
+        app_config.preserve_structure = ps;
+    }
+    if let Some(os) = &json_input.output_suffix {
+        app_config.output_suffix = Some(os.clone());
     }
 
     // 平台阈值预设（§2）+ 体积线覆盖（与 CLI 同逻辑）
@@ -1070,14 +1240,24 @@ pub(crate) fn run_json_mode(json_input: &JsonInput) -> Result<()> {
     } else {
         None
     };
+    // v4.3.1：保结构输出——以所有展开条目的公共祖先为层级基准
+    let structure_base = if app_config.preserve_structure {
+        let paths: Vec<PathBuf> = all_entries.iter().map(PathBuf::from).collect();
+        common_ancestor(&paths)
+    } else {
+        None
+    };
+    process_config.structure_base = structure_base;
     let processor = Processor::new(process_config);
 
     let force = json_input.force.unwrap_or(false);
     let overwrite = app_config.overwrite;
     let jsonl = json_input.jsonl.unwrap_or(false);
+    let passthrough = json_input.passthrough_unsupported.unwrap_or(false);
 
     // P0-FIX: 所有输入条目保留在 results 内（不存在或格式不符自动标记失败）
     // 分桶调度（与 GUI 同款 OOM 护栏）：小图并行、大图串行（多张超大 TIFF 不会并行解码撑爆内存）
+    // v4.3.1：统一走 process_or_passthrough 收口（隐藏文件→skipped、不支持格式→透传/失败）
     let results: Vec<FileResult> = map_bucketed(
         &all_entries,
         |e| is_large_image(Path::new(e)),
@@ -1089,6 +1269,7 @@ pub(crate) fn run_json_mode(json_input: &JsonInput) -> Result<()> {
                 let r = FileResult {
                     input: entry.replace('\\', "/"),
                     success: false,
+                    error_type: Some("error".to_string()),
                     error: Some(format!("路径不存在或不是文件: {}", entry)),
                     ..Default::default()
                 };
@@ -1098,22 +1279,7 @@ pub(crate) fn run_json_mode(json_input: &JsonInput) -> Result<()> {
                 return r;
             }
 
-            // 不支持的格式 → 标记失败
-            if !is_supported_image(path) {
-                let r = FileResult {
-                    input: entry.replace('\\', "/"),
-                    success: false,
-                    error: Some(format!("不支持的图片格式: {}", entry)),
-                    ..Default::default()
-                };
-                if jsonl {
-                    emit_jsonl(&r);
-                }
-                return r;
-            }
-
-            // 正常处理（process_one_file 内含幂等续跑跳过逻辑）
-            let r = process_one_file(&processor, path, force, overwrite);
+            let r = process_or_passthrough(&processor, path, force, overwrite, passthrough);
             if jsonl {
                 emit_jsonl(&r);
             }

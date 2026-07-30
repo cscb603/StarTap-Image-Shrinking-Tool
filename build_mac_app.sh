@@ -5,7 +5,7 @@
 set -e
 
 APP_NAME="图片高速压缩"
-VERSION="4.3.0"
+VERSION="4.3.1"
 APP_DIR="${APP_NAME}.app"
 BINARY_NAME="ImageCompressor"
 
