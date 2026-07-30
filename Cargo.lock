@@ -3403,7 +3403,7 @@ dependencies = [
 
 [[package]]
 name = "rust_image_compressor"
-version = "4.3.1"
+version = "4.4.0"
 dependencies = [
  "anyhow",
  "bytes",

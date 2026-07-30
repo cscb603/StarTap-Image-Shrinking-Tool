@@ -23,11 +23,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use crate::cli::platform_preset;
+use crate::cli::apply_platform_preset;
 use crate::runner::{collect_images, is_large_image, is_supported_image, load_config, save_config};
 use rust_image_compressor::perceptual::{FocusMode, PerceptualOptions, QuantMode};
 use rust_image_compressor::{
-    app_config_to_process_config, AppConfig, ColorSpace, OutputFormat, ProcessMode, Processor,
+    app_config_to_process_config, AppConfig, OutputFormat, ProcessMode, Processor,
 };
 
 #[allow(dead_code)]
@@ -158,7 +158,7 @@ impl ImageCompressorApp {
             show_about: false,
             show_advanced: false,
             custom_output_dir: None,
-            about_version: "v4.3.1".to_string(),
+            about_version: "v4.4.0".to_string(),
             stop_flag: Arc::new(AtomicBool::new(false)),
             stop_requested: false,
             stopped: false,
@@ -227,16 +227,9 @@ impl ImageCompressorApp {
         // 用途驱动参数（EXIF 保留 / 智能锐化 / 色彩空间 等内核细节全部在 lib.rs，不受影响）
         match config.usage_mode.as_str() {
             "social" => {
-                // 平台预设：长边/质量/体积线 + 是否强制 sRGB（防平台二压）
-                if let Some((max_dim, quality, target_kb, srgb)) = platform_preset(&config.platform)
-                {
-                    config.custom_max_dim = max_dim;
-                    config.custom_quality = quality;
-                    config.custom_target_kb = target_kb;
-                    if srgb {
-                        config.color_space = ColorSpace::ConvertToSRGB;
-                    }
-                }
+                // v4.4.0：统一收口 apply_platform_preset——quality_mode=="max" 自动走 Q96+444+CAS
+                let plat = config.platform.clone();
+                apply_platform_preset(&mut config, &plat);
             }
             "archive" => {
                 // lib.rs archive 分支：不缩放(0) + Q100 + 不限体积；此处无需覆盖
@@ -598,10 +591,10 @@ impl eframe::App for ImageCompressorApp {
                                         _ => "微信 (全版本)",
                                     };
                                     let quality_label =
-                                        if self.config.quality_mode == "perceptual" {
-                                            "小而美"
-                                        } else {
-                                            "普通"
+                                        match self.config.quality_mode.as_str() {
+                                            "max" => "画质优先",
+                                            "perceptual" => "小而美",
+                                            _ => "普通",
                                         };
                                     let summary = if self.config.usage_mode == "social" {
                                         format!(
@@ -781,8 +774,10 @@ impl eframe::App for ImageCompressorApp {
                                                         .color(egui::Color32::from_rgb(30, 41, 59)),
                                                 );
                                                 let qm_label =
-                                                    if self.config.quality_mode == "perceptual" {
-                                                        "小而美 (推荐)"
+                                                    if self.config.quality_mode == "max" {
+                                                        "画质优先 (推荐)"
+                                                    } else if self.config.quality_mode == "perceptual" {
+                                                        "小而美"
                                                     } else {
                                                         "普通"
                                                     };
@@ -795,8 +790,13 @@ impl eframe::App for ImageCompressorApp {
                                                     .show_ui(ui, |ui| {
                                                         ui.selectable_value(
                                                             &mut self.config.quality_mode,
+                                                            "max".to_string(),
+                                                            "画质优先 (推荐)",
+                                                        );
+                                                        ui.selectable_value(
+                                                            &mut self.config.quality_mode,
                                                             "perceptual".to_string(),
-                                                            "小而美 (推荐)",
+                                                            "小而美",
                                                         );
                                                         ui.selectable_value(
                                                             &mut self.config.quality_mode,
@@ -808,7 +808,7 @@ impl eframe::App for ImageCompressorApp {
                                             ui.add_space(4.0);
                                             ui.label(
                                                 egui::RichText::new(
-                                                    "自动卡住平台体积线，防止二次压缩糊图；小而美 = 同体积画质更好",
+                                                    "画质优先 = Q96 起步 · 4:4:4 全色度保存 · 自然锐化补偿 · 卡平台甜点防二压",
                                                 )
                                                 .size(11.0)
                                                 .color(egui::Color32::from_rgb(148, 163, 184)),

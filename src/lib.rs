@@ -1,3 +1,4 @@
+pub mod cas;
 pub mod perceptual;
 
 use anyhow::Result;
@@ -45,6 +46,9 @@ pub enum ColorSpace {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
+    /// v4.4.0：配置版本号（用于自动迁移；旧配置缺失=1，当前=2）
+    #[serde(default = "default_config_version")]
+    pub config_version: u32,
     pub mode: ProcessMode,
     pub custom_max_dim: u32,
     pub custom_quality: u8,
@@ -78,13 +82,19 @@ pub struct AppConfig {
     pub preserve_structure: bool,
     #[serde(default)]
     pub output_suffix: Option<String>,
+    // v4.4.0：CAS 锐化强度（0=关闭；画质优先档默认 0.35，缩放比>1.3 时自动补偿降采样柔化）
+    #[serde(default)]
+    pub cas_strength: f32,
 }
 
 fn default_usage_mode() -> String {
     "social".to_string()
 }
+fn default_config_version() -> u32 {
+    1
+}
 fn default_quality_mode() -> String {
-    "perceptual".to_string()
+    "max".to_string()
 }
 fn default_platform() -> String {
     "wechat".to_string()
@@ -97,6 +107,7 @@ fn default_subsampling() -> String {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            config_version: 2,
             mode: ProcessMode::Custom,
             custom_max_dim: 3000,
             custom_quality: 85,
@@ -111,13 +122,14 @@ impl Default for AppConfig {
             sharpening_amount: 0.8,
             use_custom_quantization: false,
             preserve_high_frequency: false,
-            // 默认社交分享 + 小而美感知压缩 + 微信平台（最常用组合）
+            // v4.4.0：默认社交分享 + 防二压画质优先 + 微信平台
             usage_mode: "social".to_string(),
-            quality_mode: "perceptual".to_string(),
+            quality_mode: "max".to_string(),
             platform: "wechat".to_string(),
             subsampling: "420".to_string(),
             preserve_structure: false,
             output_suffix: None,
+            cas_strength: 0.0,
         }
     }
 }
@@ -147,6 +159,8 @@ pub struct ProcessConfig {
     pub structure_base: Option<PathBuf>,
     // v4.3.1：后缀可控（覆盖默认 _wx/_hd/_da；None=默认，空串=无后缀）
     pub output_suffix: Option<String>,
+    // v4.4.0：CAS 锐化强度（0=关闭；感知模式已有 USM 时自动跳过防双重锐化）
+    pub cas_strength: f32,
 }
 
 pub struct Processor {
@@ -563,6 +577,13 @@ impl Processor {
             dynamic_img =
                 perceptual::masked_usm_sharpen(&dynamic_img, &mask, radius, amount, threshold);
             pm.sharpen_ms = t.elapsed().as_millis() as u64;
+        } else if self.config.cas_strength > 0.0 && scale < (1.0 / 1.3) {
+            // v4.4.0：CAS 锐化补偿（画质优先档）——仅在明显降采样（缩放比>1.3）时触发，
+            // 补偿 Lanczos 降采样抹掉的高频；逐像素内容自适应，平坦区恒等、无光晕，观感自然。
+            // 感知模式已有显著性 USM 时不会走到这里（上面分支优先），防双重锐化。
+            let t = std::time::Instant::now();
+            dynamic_img = cas::cas_sharpen(&dynamic_img, self.config.cas_strength);
+            pm.sharpen_ms = t.elapsed().as_millis() as u64;
         } else if self.config.enable_sharpening {
             // v4.1.0 旧路径：智能自适应锐化（行为不变）
             dynamic_img = smart_adaptive_sharpen(&dynamic_img, new_width.max(new_height));
@@ -828,6 +849,8 @@ pub fn app_config_to_process_config(
         preserve_structure: config.preserve_structure,
         structure_base: None, // 由调用方（CLI/JSON 入口）计算注入
         output_suffix: config.output_suffix.clone(),
+        // v4.4.0：CAS 锐化补偿
+        cas_strength: config.cas_strength,
         // 摄影级优化
         enable_sharpening: config.enable_sharpening,
         sharpening_radius: config.sharpening_radius,

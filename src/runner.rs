@@ -13,7 +13,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::cli::{
-    build_envelope, platform_preset, Cli, CliQualityMode, FileResult, JsonInput,
+    apply_platform_preset, build_envelope, Cli, CliQualityMode, FileResult, JsonInput,
     PerceptualMetricsOut, StepTimings,
 };
 use rust_image_compressor::perceptual::{
@@ -47,8 +47,17 @@ pub(crate) fn save_config(config: &AppConfig) -> Result<()> {
 
 pub(crate) fn load_config() -> Result<AppConfig> {
     let config_path = get_config_file_path()?;
-    let config_str = fs::read_to_string(config_path)?;
-    let config = toml::from_str(&config_str)?;
+    let config_str = fs::read_to_string(&config_path)?;
+    let mut config: AppConfig = toml::from_str(&config_str)?;
+    // v4.4.0 迁移：旧版本(ver<2)的 perceptual 档自动升级为画质优先 max
+    let did_migrate = config.config_version < 2;
+    if did_migrate && config.quality_mode == "perceptual" {
+        config.quality_mode = "max".to_string();
+    }
+    config.config_version = 2;
+    if did_migrate {
+        let _ = save_config(&config);
+    }
     Ok(config)
 }
 
@@ -65,6 +74,9 @@ fn perceptual_options_from_cli(cli: &Cli) -> Option<PerceptualOptions> {
     let on = match cli.quality_mode {
         Some(CliQualityMode::Perceptual) => true,
         Some(CliQualityMode::Normal) => false,
+        // v4.4.0 画质优先：走 CAS 锐化补偿链路，不开感知管线（防双重锐化）
+        Some(CliQualityMode::Max) => false,
+        None if cli.quality_first => false,
         None => cli.perceptual,
     };
     if !on {
@@ -1101,13 +1113,6 @@ pub(crate) fn run_json_mode(json_input: &JsonInput) -> Result<()> {
             _ => app_config.color_space = ColorSpace::KeepOriginal,
         }
     }
-    // v4.3.0：色彩子采样（JSON 可覆盖默认 420）
-    if let Some(s) = &json_input.subsampling {
-        let s = s.to_lowercase();
-        if s == "444" || s == "422" || s == "420" {
-            app_config.subsampling = s;
-        }
-    }
     // v4.3.1：保结构 / 后缀可控
     if let Some(ps) = json_input.preserve_structure {
         app_config.preserve_structure = ps;
@@ -1116,19 +1121,34 @@ pub(crate) fn run_json_mode(json_input: &JsonInput) -> Result<()> {
         app_config.output_suffix = Some(os.clone());
     }
 
-    // 平台阈值预设（§2）+ 体积线覆盖（与 CLI 同逻辑）
+    // v4.4.0：quality_mode 显式钉住（JSON 契约与 GUI 默认解耦——不传就是旧行为 normal 表，
+    // AppConfig::default() 的 GUI 默认档变化不影响 AI 调用方）。quality_first 简写优先级最高。
+    app_config.quality_mode = json_input
+        .quality_mode
+        .clone()
+        .unwrap_or_else(|| "normal".to_string());
+    if json_input.quality_first == Some(true) {
+        app_config.quality_mode = "max".to_string();
+    }
+
+    // 平台阈值预设（§2）+ 体积线覆盖（与 CLI 同逻辑）。
+    // v4.4.0：统一收口 apply_platform_preset——quality_mode=="max" 走画质优先表（Q96+444+CAS）
     if let Some(plat) = &json_input.platform {
-        if let Some((md, q, kb, srgb)) = platform_preset(plat) {
-            app_config.custom_max_dim = md;
-            app_config.custom_quality = q;
-            app_config.custom_target_kb = kb;
-            if srgb {
-                app_config.color_space = ColorSpace::ConvertToSRGB;
-            }
-        }
+        apply_platform_preset(&mut app_config, plat);
     }
     if let Some(kb) = json_input.target_budget_kb {
         app_config.custom_target_kb = kb;
+    }
+    // v4.3.0：色彩子采样（显式字段优先级最高，预设后覆盖）
+    if let Some(s) = &json_input.subsampling {
+        let s = s.to_lowercase();
+        if s == "444" || s == "422" || s == "420" {
+            app_config.subsampling = s;
+        }
+    }
+    // v4.4.0：CAS 强度显式覆盖（0=强制关闭画质优先档的默认 CAS）
+    if let Some(cs) = json_input.cas_strength {
+        app_config.cas_strength = cs.clamp(0.0, 1.0);
     }
 
     // 输出目录：未指定时默认 ./compressed/，不污染源目录
@@ -1212,12 +1232,17 @@ pub(crate) fn run_json_mode(json_input: &JsonInput) -> Result<()> {
     let perceptual_on = match json_input.quality_mode.as_deref() {
         Some("perceptual") => true,
         Some("normal") => false,
+        // v4.4.0 画质优先：CAS 锐化补偿链路，不开感知管线（防双重锐化）
+        Some("max") => false,
         Some(other) => {
             eprintln!("[WARN] 未知 quality_mode '{}'，按 normal 处理", other);
             false
         }
         None => {
-            if json_input.usage_mode.as_deref() == Some("social") {
+            // v4.4.0：quality_first 简写 = max，同样关感知（防双重锐化）
+            if json_input.quality_first == Some(true) {
+                false
+            } else if json_input.usage_mode.as_deref() == Some("social") {
                 true
             } else {
                 json_input.perceptual.unwrap_or(false)

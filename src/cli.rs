@@ -182,6 +182,16 @@ pub struct Cli {
     #[arg(long)]
     pub output_suffix: Option<String>,
 
+    /// v4.4.0：防二压画质优先模式简写（= --quality-mode max）。
+    /// 卡平台甜点把画质顶满：Q96 起步 + 4:4:4 色度全保留 + CAS 锐化补偿，体积只作安全线
+    #[arg(long)]
+    pub quality_first: bool,
+
+    /// v4.4.0：CAS 锐化补偿强度 0.0-1.0（内容自适应、无光晕，专为降采样补锐设计）。
+    /// 画质优先档默认 0.35；其他档默认 0（关闭）。仅缩放比 >1.3 时生效
+    #[arg(long, value_name = "0.0-1.0")]
+    pub cas_strength: Option<f32>,
+
     /// 覆盖平台默认体积安全线（KB）：触发质量二分搜索压到线内，防止微信/小红书/IG 二次重压
     #[arg(long)]
     pub target_budget_kb: Option<u32>,
@@ -281,6 +291,8 @@ pub enum CliQualityMode {
     Perceptual,
     /// 普通：v4.1.0 标准压缩
     Normal,
+    /// v4.4.0 防二压画质优先：Q96 起步 + 4:4:4 + CAS 锐化补偿，卡平台甜点画质顶满
+    Max,
 }
 
 impl CliQualityMode {
@@ -288,6 +300,7 @@ impl CliQualityMode {
         match self {
             CliQualityMode::Perceptual => "perceptual",
             CliQualityMode::Normal => "normal",
+            CliQualityMode::Max => "max",
         }
     }
 }
@@ -328,6 +341,50 @@ pub fn platform_preset(platform: &str) -> Option<(u32, u8, u32, bool)> {
         // 通用（中画幅/网盘/非社交渠道）：长边 2560、Q92、2MB 线；不强转 sRGB（保留原色域）
         "general" => Some((2560, 92, 2000, false)),
         _ => None,
+    }
+}
+
+/// v4.4.0 画质优先预设表（quality_mode="max"，防二压画质优先）
+/// 核心思想：卡住平台二压阈值，把画质预算顶到天花板——Q96 起步 + 4:4:4 色度全保留，
+/// 体积只是安全线（超线才二分降 Q），**不为压小而压小**。
+/// 返回：(长边 px, Q 起步, 体积安全线 KB, 强制 sRGB)
+pub fn platform_preset_max(platform: &str) -> Option<(u32, u8, u32, bool)> {
+    match platform.to_lowercase().as_str() {
+        // 微信保守档（默认）：1080 全版本兼容，900KB 线内 Q96+444 色彩饱满
+        "wechat" => Some((1080, 96, 900, true)),
+        // iOS 新宽幅：2560 长边，2MB 线
+        "wechat-new" => Some((2560, 95, 2000, true)),
+        // 小红书：官方单图 ≤5MB，竖版 1242×1660 主流 → 长边 1660 + 4.5MB 安全线
+        "xiaohongshu" => Some((1660, 96, 4500, true)),
+        "instagram" => Some((1080, 95, 1000, true)),
+        // 通用：2560 长边 + 4.9MB 线，不强转 sRGB
+        "general" => Some((2560, 96, 4900, false)),
+        _ => None,
+    }
+}
+
+/// v4.4.0 统一收口：按 quality_mode 选预设表并应用到 AppConfig。
+/// 三调用点（GUI start_processing / CLI to_app_config / JSON run_json_mode）共用，
+/// 防止三处参数表漂移。quality_mode=="max" 时额外强制 4:4:4 + CAS 锐化补偿 0.35
+/// （调用方可在本函数返回后用显式参数覆盖）。
+pub fn apply_platform_preset(cfg: &mut rust_image_compressor::AppConfig, platform: &str) {
+    let is_max = cfg.quality_mode == "max";
+    let preset = if is_max {
+        platform_preset_max(platform)
+    } else {
+        platform_preset(platform)
+    };
+    if let Some((max_dim, quality, target_kb, srgb)) = preset {
+        cfg.custom_max_dim = max_dim;
+        cfg.custom_quality = quality;
+        cfg.custom_target_kb = target_kb;
+        if srgb {
+            cfg.color_space = ColorSpace::ConvertToSRGB;
+        }
+    }
+    if is_max {
+        cfg.subsampling = "444".to_string();
+        cfg.cas_strength = 0.35;
     }
 }
 
@@ -389,7 +446,7 @@ pub struct JsonInput {
     pub platform: Option<String>,
     /// 用途预设：social(社交分享) / archive(高清存档) / custom(自定义)。GUI 用；CLI 可省略
     pub usage_mode: Option<String>,
-    /// 画质模式：perceptual(小而美感知压缩) / normal(普通标准压缩)
+    /// 画质模式：perceptual(小而美感知压缩) / normal(普通标准压缩) / max(v4.4.0 防二压画质优先)
     pub quality_mode: Option<String>,
     /// 色彩子采样：420=照片(默认) / 444=截图文字 / 422=平衡
     pub subsampling: Option<String>,
@@ -401,6 +458,12 @@ pub struct JsonInput {
     pub output_suffix: Option<String>,
     /// 不支持的格式原样透传（不压缩、不报失败），如 SVG
     pub passthrough_unsupported: Option<bool>,
+
+    // ========== v4.4.0 防二压画质优先 ==========
+    /// 画质优先简写（= quality_mode:"max"）：Q96 起步 + 4:4:4 + CAS 锐化补偿，卡平台甜点画质顶满
+    pub quality_first: Option<bool>,
+    /// CAS 锐化补偿强度 0.0-1.0（内容自适应、无光晕；画质优先档默认 0.35，其他档默认 0）
+    pub cas_strength: Option<f32>,
 }
 
 // ============================================================================
@@ -964,6 +1027,10 @@ pub fn build_capabilities() -> Capabilities {
                 .to_string(),
             "首次接入建议先跑 --self-check 验证二进制健康，再跑 --capabilities 获取 schema"
                 .to_string(),
+            "v4.4.0：quality_mode 新增 max（防二压画质优先）—— Q96 起步 + 4:4:4 全色度保留 + CAS 自然锐化补偿，体积仅作安全线不主动压"
+                .to_string(),
+            "v4.4.0：--quality-first 简写（= quality_mode max）；--cas-strength 0-1 控制锐化强度（画质优先档默认 0.35，缩放比 >1.3 生效，平坦区自动跳过）"
+                .to_string(),
         ],
     }
 }
@@ -1004,6 +1071,7 @@ impl From<CliColorSpace> for ColorSpace {
 impl Cli {
     pub fn to_app_config(&self) -> AppConfig {
         let mut cfg = AppConfig {
+            config_version: 2,
             mode: self.mode.into(),
             custom_max_dim: self.max_dim,
             custom_quality: self.quality,
@@ -1024,23 +1092,29 @@ impl Cli {
             usage_mode: match self.usage_mode {
                 Some(u) => u.as_str().to_string(),
                 None => {
-                    if self.platform.is_some() {
+                    // v4.4.0：--quality-first 也是「平台驱动」信号 → social（默认 wechat 预设）
+                    if self.platform.is_some() || self.quality_first {
                         "social".to_string()
                     } else {
                         "custom".to_string()
                     }
                 }
             },
-            quality_mode: self
-                .quality_mode
-                .map(|q| q.as_str().to_string())
-                .unwrap_or_else(|| {
-                    if self.perceptual {
-                        "perceptual".to_string()
-                    } else {
-                        "normal".to_string()
-                    }
-                }),
+            // v4.4.0：--quality-first 简写优先级最高（= max），其次显式 --quality-mode，
+            // 都没给则跟随 --perceptual 旗标（v4.1.0 旧行为完全不变）
+            quality_mode: if self.quality_first {
+                "max".to_string()
+            } else {
+                self.quality_mode
+                    .map(|q| q.as_str().to_string())
+                    .unwrap_or_else(|| {
+                        if self.perceptual {
+                            "perceptual".to_string()
+                        } else {
+                            "normal".to_string()
+                        }
+                    })
+            },
             platform: self
                 .platform
                 .map(|p| p.as_str().to_string())
@@ -1053,6 +1127,8 @@ impl Cli {
             // v4.3.1：保结构 / 后缀可控
             preserve_structure: self.preserve_structure,
             output_suffix: self.output_suffix.clone(),
+            // v4.4.0：CAS 默认关；画质优先档由 apply_platform_preset 置 0.35，--cas-strength 可覆盖
+            cas_strength: 0.0,
         };
         // 平台预设自动填长边/体积/Q 并强制 sRGB（§2）。显式 --target-budget-kb 覆盖预设体积线。
         // --usage-mode social 但没给 --platform 时按默认 wechat 预设（与 GUI 默认一致）。
@@ -1062,17 +1138,18 @@ impl Cli {
             None => None,
         };
         if let Some(ref p) = effective_platform {
-            if let Some((max_dim, quality, target_kb, srgb)) = platform_preset(p) {
-                cfg.custom_max_dim = max_dim;
-                cfg.custom_quality = quality;
-                cfg.custom_target_kb = target_kb;
-                if srgb {
-                    cfg.color_space = ColorSpace::ConvertToSRGB;
-                }
-            }
+            // v4.4.0：统一收口——按 quality_mode 选普通表 / 画质优先表（max：Q96+444+CAS）
+            apply_platform_preset(&mut cfg, p);
         }
+        // 显式参数优先级最高，预设应用后覆盖（不给则用预设值）
         if let Some(kb) = self.target_budget_kb {
             cfg.custom_target_kb = kb;
+        }
+        if let Some(ref s) = self.subsampling {
+            cfg.subsampling = s.to_lowercase();
+        }
+        if let Some(cs) = self.cas_strength {
+            cfg.cas_strength = cs.clamp(0.0, 1.0);
         }
         cfg
     }
