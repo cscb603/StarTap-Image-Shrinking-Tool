@@ -58,9 +58,7 @@ fn main() {
                 }
                 _ => {
                     // 失败仅警告，不阻断编译（无图标也能跑）
-                    println!(
-                        "cargo:warning=llvm-rc 资源注入失败，exe 将无图标/清单（仍可用）"
-                    );
+                    println!("cargo:warning=llvm-rc 资源注入失败，exe 将无图标/清单（仍可用）");
                 }
             }
         }
