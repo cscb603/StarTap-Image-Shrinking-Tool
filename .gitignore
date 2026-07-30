@@ -2,5 +2,9 @@ target/
 dist/
 test_images/
 ab_output/
+compressed/
+*.app/
 *.zip
+*.log
+benchmark*
 .DS_Store
