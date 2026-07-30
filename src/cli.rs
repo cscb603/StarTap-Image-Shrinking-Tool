@@ -149,6 +149,10 @@ pub struct Cli {
     #[arg(long, value_enum, default_value = "auto")]
     pub focus_mode: CliFocusMode,
 
+    /// 感知量化表：csf=自算CSF感知表(默认) / msssim=内置MS-SSIM调优表 / standard=v4.1.0标准表
+    #[arg(long, value_enum, default_value = "csf")]
+    pub quant_mode: CliQuantMode,
+
     #[arg(value_name = "FILE/DIR")]
     pub positional: Vec<PathBuf>,
 }
@@ -183,6 +187,23 @@ impl From<CliFocusMode> for rust_image_compressor::perceptual::FocusMode {
         match m {
             CliFocusMode::Auto => Self::Auto,
             CliFocusMode::Center => Self::Center,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CliQuantMode {
+    Standard,
+    Msssim,
+    Csf,
+}
+
+impl From<CliQuantMode> for rust_image_compressor::perceptual::QuantMode {
+    fn from(m: CliQuantMode) -> Self {
+        match m {
+            CliQuantMode::Standard => Self::Standard,
+            CliQuantMode::Msssim => Self::MsSsim,
+            CliQuantMode::Csf => Self::Csf,
         }
     }
 }

@@ -34,3 +34,7 @@ codegen-units = 1
 panic = "abort"
 
 # Windows 资源（图标 / DPI 清单）注入由 build.rs 在交叉编译时处理，见 build.rs
+
+# v4.2.0-exp 验证用：集成测试需直接解码输出图以独立核算 SSIM/PSNR（与工具内部算法同源）
+[dev-dependencies]
+image = { version = "0.25", features = ["png", "jpeg", "ico", "webp"] }

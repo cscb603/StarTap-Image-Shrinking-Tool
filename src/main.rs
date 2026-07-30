@@ -43,6 +43,7 @@ fn perceptual_options_from_cli(cli: &Cli) -> Option<PerceptualOptions> {
     Some(PerceptualOptions {
         denoise_strength: cli.denoise_strength.min(100),
         focus_mode: cli.focus_mode.into(),
+        quant_mode: cli.quant_mode.into(),
         ..Default::default()
     })
 }
