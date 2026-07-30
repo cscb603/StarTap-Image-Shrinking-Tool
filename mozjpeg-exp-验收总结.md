@@ -19,19 +19,19 @@
 | **体积收益** | 同质量 Q95 不缩放：v4.2.0 jpeg-encoder(4:4:4)=**9530KB** → mozjpeg-rs(4:2:0)=**5005KB**（省 **47.5%**） | ≥20% ✅ |
 | **编码器替换** | `Encoder::default().quality(q).progressive(true).optimize_huffman(true).subsampling(sub).quant_tables(idx).encode_rgb(buf,w,h)` 编译零错误 | — ✅ |
 | **子采样开关** | 444(7065KB) > 420(5005KB)，GUI ComboBox / CLI `--subsampling` / JSON `subsampling` 全链路贯通 | 生效 ✅ |
-| **ICC/EXIF 双段** | 测试图 GYL_3359.JPG 恰含 **2 个 APP1 段（EXIF+ICC）**，输出保留 2 个 → 宽色域 ICC 不再丢 | 修 v4.2.0 丢 ICC 坑 ✅ |
+| **ICC/EXIF/XMP 全段保留** | 调研发现 JPEG 的 ICC 实际存于 **APP2**（非 APP1）；v4.2.0 只取首个 APP1 会丢 XMP 与宽色域 ICC。v4.3.0 改为保留**所有 APP 段(0xE0–0xEF)**：EXIF+XMP+ICC+MPF 全部原样保留。经注入 ICC_PROFILE 的测试图实证：输出确实含 ICC_PROFILE（True） | 彻底修掉丢 ICC 坑 ✅ |
 | **perceptual 量化表** | 改用内置 `QuantTableIdx::MssimTuned`（替代原 CSF 自定义表，mozjpeg-rs 不支持外部注入） | ✅ |
 | **clippy** | `--release` 零警告（修 `as u32` 多余 cast 2 处） | 零警告 ✅ |
 | **功能无回归** | archive 不缩放(_hd 原尺寸 8192×5464) / 大图 TIFF 串行 90KB / 旧 CLI 兼容 / JSON 文件参数 | 全过 ✅ |
 | **双平台编译** | Mac release 零警告；Win `cargo xwin` 15MB exe 编译通过 | ✅ |
 
-## 三、停止线（严格遵守）
+## 三、发版结果（用户选 A：合并 main → 发 4.3.0）
 
-- ❌ 未 push GitHub
-- ❌ 未 Release / 未动外置盘
-- ❌ 未合并 main
-- ❌ 未升版本号发版（Cargo.toml 仍 4.2.0；GUI `about_version` 标 `4.3.0-exp` 区分分支）
-- ✅ 已 commit 到本地 `mozjpeg-exp` 分支（5aca767）
+- ✅ 合并：本地 `main` 分支指向 4.3.0 合并点（含完整历史）
+- ✅ GitHub：源码经 `gh api` 推送 main（21 文件全成功，v4.2.0 旧 git HTTPS 被代理阻断改 API 通道）
+- ✅ Release：[v4.3.0](https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.3.0) 已建，资产 `_Mac_v4.3.0.zip`(13.8MB) / `_Win_v4.3.0.zip`(8.2MB)
+- ✅ 外置盘 + Downloads：双平台 zip 均已存入
+- ✅ 版本号：Cargo.toml / build_mac_app.sh / gui `about_version` / Info.plist 均 4.3.0
 
 ## 四、已知遗留（非阻塞）
 
@@ -39,10 +39,4 @@
 2. `perceptual::csf_quant_tables()` 原函数定义变为死代码（不再被调用），保留备用
 3. Win xwin 二进制仅编译验证，未实跑（纯 Rust 跨平台，风险低）
 
-## 五、下一步（用户拍板）
-
-- **A. 合并 main → 发 4.3.0**：双平台包 + GitHub Release + 外置盘（连接器优先）
-- **B. 独立发 4.3.0-exp**：实验分支先行，main 暂不动
-- **C. 继续 Tier3（JXL）/ Tier4（AVIF）**：需评估 AGPL 许可影响
-
-源文件改动：Cargo.toml + src/lib.rs + src/cli.rs + src/runner.rs + src/gui.rs（5 文件，+100/-33 行）。
+源文件改动：Cargo.toml + src/lib.rs + src/cli.rs + src/runner.rs + src/gui.rs + Info.plist + build_mac_app.sh（含版本号 + P4 ICC 修正）。
