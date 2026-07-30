@@ -21,6 +21,7 @@ use clap::Parser;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use eframe::egui;
 use egui::IconData;
+use image::GenericImageView;
 use num_cpus::get;
 use rayon::prelude::*;
 use std::collections::VecDeque;
@@ -28,13 +29,14 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use image::GenericImageView;
 
 use cli::{
     build_capabilities, build_envelope, platform_preset, Cli, FileResult, JsonInput,
     PerceptualMetricsOut, StepTimings,
 };
-use rust_image_compressor::perceptual::{FocusMode, PerceptualMetrics, PerceptualOptions, QuantMode};
+use rust_image_compressor::perceptual::{
+    FocusMode, PerceptualMetrics, PerceptualOptions, QuantMode,
+};
 use rust_image_compressor::{
     app_config_to_process_config, AppConfig, ColorSpace, OutputFormat, ProcessMode, Processor,
 };
@@ -99,6 +101,10 @@ struct ImageCompressorApp {
     show_advanced: bool,
     custom_output_dir: Option<PathBuf>,
     about_version: String,
+    /// 输出平台档案（默认 wechat；透传感知管线，驱动长边像素上限）
+    platform: String,
+    /// 感知优化开关（默认开：同体积画质更好）
+    enable_perceptual: bool,
     tx: Sender<AppEvent>,
     rx: Receiver<AppEvent>,
 }
@@ -107,10 +113,12 @@ impl ImageCompressorApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = unbounded();
 
-        let config = load_config().unwrap_or_else(|_| AppConfig {
+        let mut config = load_config().unwrap_or_else(|_| AppConfig {
             custom_quality: 95,
             ..Default::default()
         });
+        // 900KB 做底：默认微信优化模式
+        config.mode = ProcessMode::WeChat;
 
         // 先设置视觉样式，避免窗口背景闪烁！
         let mut visuals = egui::Visuals::light();
@@ -186,7 +194,9 @@ impl ImageCompressorApp {
             show_about: false,
             show_advanced: false,
             custom_output_dir: None,
-            about_version: "v4.0.8".to_string(),
+            about_version: "v4.2.0".to_string(),
+            platform: "wechat".to_string(),
+            enable_perceptual: true,
             tx,
             rx,
         }
@@ -238,12 +248,32 @@ impl ImageCompressorApp {
         self.success_count = 0;
 
         let files: Vec<FileItem> = self.files.clone().into_iter().collect();
-        let config = self.config.clone();
+        let mut config = self.config.clone();
         let custom_output_dir = self.custom_output_dir.clone();
+        let platform = self.platform.clone();
+        let enable_perceptual = self.enable_perceptual;
         let tx = self.tx.clone();
 
+        // 平台档案驱动长边像素上限（微信1080 / 微信-new2560 / 小红书1440 ...）
+        if let Some((max_dim, _q, _kb, _srgb)) = platform_preset(&platform) {
+            config.custom_max_dim = max_dim;
+        }
+
         let _ = std::thread::spawn(move || {
-            let processor_config = app_config_to_process_config(&config, custom_output_dir);
+            let mut processor_config = app_config_to_process_config(&config, custom_output_dir);
+            // 感知压缩：GUI 默认开启（比 v4.1.0 同体积画质更好），卡着体积线给最大画质
+            processor_config.perceptual = if enable_perceptual {
+                Some(PerceptualOptions {
+                    denoise_strength: 25,
+                    focus_mode: FocusMode::Auto,
+                    quant_mode: QuantMode::Csf,
+                    quality_ceil: 100,
+                    budget_kb: None,
+                    platform: Some(platform.clone()),
+                })
+            } else {
+                None
+            };
             let processor = Processor::new(processor_config);
             let total = files.len();
             let success_count = AtomicUsize::new(0);
@@ -420,7 +450,7 @@ impl eframe::App for ImageCompressorApp {
                     }
                     ui.add_space(10.0);
                     ui.label(
-                        egui::RichText::new("星TAP 实验室 | 高性能 Rust 内核 v4.0")
+                        egui::RichText::new("星TAP 实验室 | 高性能 Rust 内核 v4.2")
                             .size(10.0)
                             .color(egui::Color32::from_rgb(148, 163, 184)),
                     );
@@ -449,7 +479,7 @@ impl eframe::App for ImageCompressorApp {
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        egui::RichText::new("✨ 内核升级 v4.0")
+                                        egui::RichText::new("✨ 内核升级 v4.2")
                                             .strong()
                                             .color(egui::Color32::from_rgb(37, 99, 235)),
                                     );
@@ -509,6 +539,71 @@ impl eframe::App for ImageCompressorApp {
                                         &mut self.config.mode,
                                         ProcessMode::Custom,
                                         "自定义模式",
+                                    );
+                                });
+
+                                ui.add_space(6.0);
+                                // 输出平台选择（默认微信；驱动长边像素上限 + 感知档案）
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("输出平台:")
+                                            .strong()
+                                            .size(13.0)
+                                            .color(egui::Color32::from_rgb(30, 41, 59)),
+                                    );
+                                    let plat_label = match self.platform.as_str() {
+                                        "wechat" => "微信 (全版本)",
+                                        "wechat-new" => "微信-new (iOS 新)",
+                                        "xiaohongshu" => "小红书",
+                                        "instagram" => "Instagram",
+                                        "general" => "通用 (中画幅)",
+                                        _ => "微信 (全版本)",
+                                    };
+                                    egui::ComboBox::from_label("")
+                                        .selected_text(
+                                            egui::RichText::new(plat_label)
+                                                .color(egui::Color32::from_rgb(37, 99, 235)),
+                                        )
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                &mut self.platform,
+                                                "wechat".to_string(),
+                                                "微信 (全版本)",
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.platform,
+                                                "wechat-new".to_string(),
+                                                "微信-new (iOS 新)",
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.platform,
+                                                "xiaohongshu".to_string(),
+                                                "小红书",
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.platform,
+                                                "instagram".to_string(),
+                                                "Instagram",
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.platform,
+                                                "general".to_string(),
+                                                "通用 (中画幅)",
+                                            );
+                                        });
+                                });
+
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(
+                                        &mut self.enable_perceptual,
+                                        egui::RichText::new("感知优化 (同体积画质更好)")
+                                            .color(egui::Color32::from_rgb(30, 41, 59)),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new("默认开启 · 卡着体积线给最大画质")
+                                            .size(11.0)
+                                            .color(egui::Color32::from_rgb(148, 163, 184)),
                                     );
                                 });
 
@@ -758,7 +853,7 @@ impl eframe::App for ImageCompressorApp {
                             );
                             ui.add_space(5.0);
                             ui.label(
-                                egui::RichText::new("支持 JPG, PNG, WEBP, DNG, RAW 等格式")
+                                egui::RichText::new("支持 JPG, PNG, WEBP, TIFF, DNG, RAW 等格式")
                                     .size(12.0)
                                     .color(egui::Color32::from_rgb(100, 116, 139)),
                             );
@@ -786,9 +881,9 @@ impl eframe::App for ImageCompressorApp {
                                         .add_filter(
                                             "图片文件",
                                             &[
-                                                "jpg", "jpeg", "png", "webp", "bmp", "dng", "cr2",
-                                                "cr3", "nef", "arw", "orf", "raf", "rw2", "pef",
-                                                "srw",
+                                                "jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff",
+                                                "dng", "cr2", "cr3", "nef", "arw", "orf", "raf",
+                                                "rw2", "pef", "srw",
                                             ],
                                         )
                                         .pick_files()
@@ -1268,7 +1363,11 @@ fn build_perceptual_out(
             FocusMode::Auto => "auto".to_string(),
             FocusMode::Center => "center".to_string(),
         }),
-        bytes_budget_kb: if budget > 0 { Some(budget as f64) } else { None },
+        bytes_budget_kb: if budget > 0 {
+            Some(budget as f64)
+        } else {
+            None
+        },
         ssim_vs_source: metrics.map(|m| m.ssim_vs_source),
         psnr_vs_source: metrics.map(|m| m.psnr_vs_source),
         final_quality: metrics.map(|m| m.final_quality),
@@ -1377,7 +1476,13 @@ fn run_compare_mode(cli: &Cli, files: &[PathBuf]) -> Result<()> {
                 p
             }
         })
-        .or_else(|| Some(std::env::current_dir().unwrap_or_default().join("compressed")))
+        .or_else(|| {
+            Some(
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join("compressed"),
+            )
+        })
         .unwrap_or_default();
     let ab_dir = out_base.join("ab_output");
     let old_dir = ab_dir.join("old");
@@ -1486,8 +1591,12 @@ fn ssim_psnr_vs_source(orig: &Path, out: &Path) -> Option<(f64, f64)> {
     let orig_img = image::open(orig).ok()?;
     let out_img = image::open(out).ok()?;
     let (ow, oh) = out_img.dimensions();
-    let orig_resized =
-        image::imageops::resize(&orig_img.to_rgb8(), ow, oh, image::imageops::FilterType::Triangle);
+    let orig_resized = image::imageops::resize(
+        &orig_img.to_rgb8(),
+        ow,
+        oh,
+        image::imageops::FilterType::Triangle,
+    );
     let orig_dyn = image::DynamicImage::ImageRgb8(orig_resized);
     let (ref_gray, _, _) = rust_image_compressor::perceptual::to_gray(&orig_dyn);
     let (out_gray, gw, gh) = rust_image_compressor::perceptual::to_gray(&out_img);

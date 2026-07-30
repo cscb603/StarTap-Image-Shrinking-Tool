@@ -7,7 +7,7 @@
 
 use image::GenericImageView;
 use rust_image_compressor::perceptual::{FocusMode, PerceptualOptions, QuantMode};
-use rust_image_compressor::{app_config_to_process_config, AppConfig, Processor, ProcessMode};
+use rust_image_compressor::{app_config_to_process_config, AppConfig, ProcessMode, Processor};
 use std::path::{Path, PathBuf};
 
 fn manifest_dir() -> PathBuf {
@@ -15,7 +15,12 @@ fn manifest_dir() -> PathBuf {
 }
 
 /// 构造处理器：max_dim/quality 固定，quant_mode=None 即纯 v4.1.0 旧路径（perceptual 恒 None）
-fn build_processor(quant_mode: Option<QuantMode>, out_dir: &Path, max_dim: u32, quality: u8) -> Processor {
+fn build_processor(
+    quant_mode: Option<QuantMode>,
+    out_dir: &Path,
+    max_dim: u32,
+    quality: u8,
+) -> Processor {
     let cfg = AppConfig {
         mode: ProcessMode::Custom,
         custom_max_dim: max_dim,
@@ -41,8 +46,12 @@ fn ssim_psnr_vs_original(orig: &Path, out: &Path) -> Option<(f64, f64)> {
     let orig_img = image::open(orig).ok()?;
     let out_img = image::open(out).ok()?;
     let (ow, oh) = out_img.dimensions();
-    let orig_resized =
-        image::imageops::resize(&orig_img.to_rgb8(), ow, oh, image::imageops::FilterType::Triangle);
+    let orig_resized = image::imageops::resize(
+        &orig_img.to_rgb8(),
+        ow,
+        oh,
+        image::imageops::FilterType::Triangle,
+    );
     let orig_dyn = image::DynamicImage::ImageRgb8(orig_resized);
     let (ref_gray, _, _) = rust_image_compressor::perceptual::to_gray(&orig_dyn);
     let (out_gray, gw, gh) = rust_image_compressor::perceptual::to_gray(&out_img);
@@ -96,7 +105,10 @@ fn verify_perceptual_quant_tables() {
         };
         let size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
         let (ssim, psnr) = ssim_psnr_vs_original(&img, &out_path).unwrap_or((f64::NAN, f64::NAN));
-        let lib_ssim = metrics.as_ref().map(|m| m.ssim_vs_source).unwrap_or(f64::NAN);
+        let lib_ssim = metrics
+            .as_ref()
+            .map(|m| m.ssim_vs_source)
+            .unwrap_or(f64::NAN);
         println!(
             "{:<14} {:>12} {:>10.6} {:>10.2} {:>10.6}",
             label, size, ssim, psnr, lib_ssim

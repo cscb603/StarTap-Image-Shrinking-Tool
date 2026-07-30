@@ -2,11 +2,11 @@ pub mod perceptual;
 
 use anyhow::Result;
 use bytes::Bytes;
-use perceptual::{FocusMode, PerceptualMetrics, PerceptualOptions};
 use fast_image_resize as fr;
 use image::GenericImageView;
 use img_parts::jpeg::Jpeg;
 use memmap2::Mmap;
+use perceptual::{FocusMode, PerceptualMetrics, PerceptualOptions};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -579,8 +579,7 @@ impl Processor {
                 pm.encode_ms = t_encode.elapsed().as_millis() as u64;
 
                 // 感知指标：解码输出 JPG，与「降采样后参考帧」算 SSIM/PSNR
-                if let (Some(_), Some((ref_gray, gw, gh))) = (perceptual, reference_gray.as_ref())
-                {
+                if let (Some(_), Some((ref_gray, gw, gh))) = (perceptual, reference_gray.as_ref()) {
                     if let Ok(decoded) = image::load_from_memory(&result_data) {
                         let (out_gray, ow, oh) = perceptual::to_gray(&decoded);
                         if ow == *gw && oh == *gh {

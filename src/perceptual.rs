@@ -249,7 +249,11 @@ fn fft1d(re: &mut [f64], im: &mut [f64], inverse: bool) {
 fn fft2d(re: &mut [f64], im: &mut [f64], n: usize, inverse: bool) {
     // 行
     for y in 0..n {
-        fft1d(&mut re[y * n..(y + 1) * n], &mut im[y * n..(y + 1) * n], inverse);
+        fft1d(
+            &mut re[y * n..(y + 1) * n],
+            &mut im[y * n..(y + 1) * n],
+            inverse,
+        );
     }
     // 列（转置缓冲）
     let mut col_r = vec![0f64; n];
@@ -503,9 +507,9 @@ pub fn masked_usm_sharpen(
 
 /// JPEG Annex-K 标准亮度量化表基底（quality=50 基准）
 const STD_LUMA_BASE: [u16; 64] = [
-    16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69,
-    56, 14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81,
-    104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99,
+    16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56,
+    14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113,
+    92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99,
 ];
 /// JPEG Annex-K 标准色度量化表基底（quality=50 基准）
 const STD_CHROMA_BASE: [u16; 64] = [
@@ -595,7 +599,10 @@ pub fn csf_quant_tables(quality: u8) -> ([u16; 64], [u16; 64]) {
         out
     };
 
-    (build(&std_luma, &luma_sens, luma_mean), build(&std_chroma, &chroma_sens, chroma_mean))
+    (
+        build(&std_luma, &luma_sens, luma_mean),
+        build(&std_chroma, &chroma_sens, chroma_mean),
+    )
 }
 
 // ============================================================================

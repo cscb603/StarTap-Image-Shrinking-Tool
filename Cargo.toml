@@ -1,6 +1,6 @@
 [package]
 name = "rust_image_compressor"
-version = "4.1.0"
+version = "4.2.0"
 edition = "2021"
 authors = ["星 TAP 实验室"]
 description = "图片高速压缩工具 - 星 TAP 实验室出品（摄影级优化）"
@@ -8,7 +8,7 @@ description = "图片高速压缩工具 - 星 TAP 实验室出品（摄影级优
 [dependencies]
 eframe = "0.31"
 egui = "0.31"
-image = { version = "0.25", features = ["png", "jpeg", "ico", "webp"] }
+image = { version = "0.25", features = ["png", "jpeg", "ico", "webp", "tiff"] }
 fast_image_resize = "6.0"
 jpeg-encoder = "0.7"
 rayon = "1.11"
@@ -37,4 +37,4 @@ panic = "abort"
 
 # v4.2.0-exp 验证用：集成测试需直接解码输出图以独立核算 SSIM/PSNR（与工具内部算法同源）
 [dev-dependencies]
-image = { version = "0.25", features = ["png", "jpeg", "ico", "webp"] }
+image = { version = "0.25", features = ["png", "jpeg", "ico", "webp", "tiff"] }
