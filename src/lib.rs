@@ -57,6 +57,27 @@ pub struct AppConfig {
     pub sharpening_amount: f32,        // 锐化强度 (默认 0.8)
     pub use_custom_quantization: bool, // 自定义量化表
     pub preserve_high_frequency: bool, // 保留高频细节
+    // v4.2.0：用途 / 平台 / 画质模式（GUI 记忆 + 三方接口对齐）
+    // usage_mode: "social"(社交分享) | "archive"(高清存档) | "custom"(自定义)
+    // quality_mode: "perceptual"(小而美感知压缩) | "normal"(普通标准压缩)
+    // platform: wechat/wechat-new/xiaohongshu/instagram/general
+    // serde(default)：旧版 config.toml 没有这三个字段，升级后仍能正常加载（配置记忆不丢）
+    #[serde(default = "default_usage_mode")]
+    pub usage_mode: String,
+    #[serde(default = "default_quality_mode")]
+    pub quality_mode: String,
+    #[serde(default = "default_platform")]
+    pub platform: String,
+}
+
+fn default_usage_mode() -> String {
+    "social".to_string()
+}
+fn default_quality_mode() -> String {
+    "perceptual".to_string()
+}
+fn default_platform() -> String {
+    "wechat".to_string()
 }
 
 impl Default for AppConfig {
@@ -76,6 +97,10 @@ impl Default for AppConfig {
             sharpening_amount: 0.8,
             use_custom_quantization: false,
             preserve_high_frequency: false,
+            // 默认社交分享 + 小而美感知压缩 + 微信平台（最常用组合）
+            usage_mode: "social".to_string(),
+            quality_mode: "perceptual".to_string(),
+            platform: "wechat".to_string(),
         }
     }
 }
@@ -260,13 +285,16 @@ impl Processor {
 
             let _ = preview_cmd.output();
             if output_path.exists() {
-                if let Ok(img) = image::open(output_path) {
-                    let (w, h) = img.dimensions();
-                    if w > self.config.max_dim || h > self.config.max_dim {
-                        let mut resize_cmd = std::process::Command::new("sips");
-                        resize_cmd.arg("-Z").arg(self.config.max_dim.to_string());
-                        resize_cmd.arg(output_path);
-                        let _ = resize_cmd.output();
+                // max_dim == 0 表示「不缩放」（高清存档），跳过 sips -Z
+                if self.config.max_dim > 0 {
+                    if let Ok(img) = image::open(output_path) {
+                        let (w, h) = img.dimensions();
+                        if w > self.config.max_dim || h > self.config.max_dim {
+                            let mut resize_cmd = std::process::Command::new("sips");
+                            resize_cmd.arg("-Z").arg(self.config.max_dim.to_string());
+                            resize_cmd.arg(output_path);
+                            let _ = resize_cmd.output();
+                        }
                     }
                 }
                 return Ok(());
@@ -276,7 +304,9 @@ impl Processor {
             cmd.arg("-s").arg("format").arg("jpeg");
             let quality = self.config.quality;
             cmd.arg("-s").arg("formatOptions").arg(quality.to_string());
-            cmd.arg("-Z").arg(self.config.max_dim.to_string());
+            if self.config.max_dim > 0 {
+                cmd.arg("-Z").arg(self.config.max_dim.to_string());
+            }
             cmd.arg(&input_path_abs).arg("--out").arg(output_path);
 
             let mut child = cmd.spawn()?;
@@ -303,13 +333,14 @@ impl Processor {
             let temp_dir = std::env::temp_dir().join("rust_compressor_ql");
             let _ = fs::create_dir_all(&temp_dir);
             let mut ql_cmd = std::process::Command::new("qlmanage");
-            ql_cmd
-                .arg("-t")
-                .arg("-s")
-                .arg(self.config.max_dim.to_string())
-                .arg("-o")
-                .arg(&temp_dir)
-                .arg(&input_path_abs);
+            ql_cmd.arg("-t").arg("-s");
+            // max_dim == 0（不缩放）时 qlmanage 仍需尺寸参数 → 给超大值等效原尺寸
+            if self.config.max_dim > 0 {
+                ql_cmd.arg(self.config.max_dim.to_string());
+            } else {
+                ql_cmd.arg("20000");
+            }
+            ql_cmd.arg("-o").arg(&temp_dir).arg(&input_path_abs);
 
             if let Ok(mut child) = ql_cmd.spawn() {
                 let start = std::time::Instant::now();
@@ -370,7 +401,10 @@ impl Processor {
         let perceptual = self.config.perceptual.as_ref();
         let mut pm = PerceptualMetrics::default();
 
-        let scale = if width > self.config.max_dim || height > self.config.max_dim {
+        // max_dim == 0 表示「不缩放，保持原图尺寸」（高清存档/投稿场景）
+        let scale = if self.config.max_dim > 0
+            && (width > self.config.max_dim || height > self.config.max_dim)
+        {
             let ratio_w = self.config.max_dim as f32 / width as f32;
             let ratio_h = self.config.max_dim as f32 / height as f32;
             ratio_w.min(ratio_h)
@@ -381,19 +415,7 @@ impl Processor {
         let new_width = (width as f32 * scale) as u32;
         let new_height = (height as f32 * scale) as u32;
 
-        let mut img_rgba = img.to_rgba8();
-
-        // 感知管线顺序铁律 §3：先降噪再降采样（噪点在高频，先抹平采样才干净）
-        // 二次压缩 JPG 禁降噪（放大块效应）→ 仅 TIFF/PNG 等无损/一次成像输入生效
-        if let Some(p) = perceptual {
-            let is_jpeg_input = matches!(extension, "jpg" | "jpeg");
-            if p.denoise_strength > 0 && !is_jpeg_input {
-                let t = std::time::Instant::now();
-                img_rgba = perceptual::bilateral_denoise(&img_rgba, p.denoise_strength);
-                pm.denoise_ms = t.elapsed().as_millis() as u64;
-                pm.denoise_applied = true;
-            }
-        }
+        let img_rgba = img.to_rgba8();
 
         let t_down = std::time::Instant::now();
         let src_image = fr::images::Image::from_vec_u8(
@@ -421,7 +443,20 @@ impl Processor {
         let reference_gray = perceptual.map(|_| perceptual::to_gray(&dynamic_img));
 
         if let Some(p) = perceptual {
-            // 感知管线顺序铁律 §3：锐化在目标分辨率上做、且是编码前最后一步
+            // 降噪在「目标分辨率」上做（§3 防御性修正：超大图全分辨率降噪会卡死/爆内存，
+            // 统一放降采样后；高质量重采样已抑制高频噪点，目标分辨率降噪足以满足分享/存档画质）
+            // JPG 输入禁降噪（放大块效应）；超过 4000px 的超大图直接跳过降噪（防冻结）
+            let is_jpeg_input = matches!(extension, "jpg" | "jpeg");
+            if p.denoise_strength > 0 && !is_jpeg_input && new_width.max(new_height) <= 4000 {
+                let t = std::time::Instant::now();
+                dynamic_img = image::DynamicImage::ImageRgba8(perceptual::bilateral_denoise(
+                    &dynamic_img.to_rgba8(),
+                    p.denoise_strength,
+                ));
+                pm.denoise_ms = t.elapsed().as_millis() as u64;
+                pm.denoise_applied = true;
+            }
+            // 锐化在目标分辨率上做、且是编码前最后一步
             let t = std::time::Instant::now();
             let rgba_now = dynamic_img.to_rgba8();
             let mask = match p.focus_mode {
@@ -639,59 +674,58 @@ fn preserve_exif_safe(input_path: &Path, result_data: &[u8]) -> Vec<u8> {
     output_jpeg.encoder().bytes().to_vec()
 }
 
+/// 用途驱动的三方统一配置构造（GUI / CLI / AI JSON 同一套语义）
+///
+/// - social：平台预设值（已写入 `custom_*`）→ 社交分享最优体积/画质
+/// - archive：不缩放(0) + 最高画质(100) + 不限位(0) → 高清存档
+/// - custom：完全按用户自定义参数（含 `--mode hd` 的 4096/95/5000 兼容）
+///
+/// 平台预设 / 不缩放策略 / sRGB 强制 已在调用方（`apply_usage_preset` / `to_app_config` /
+/// json 路径）写入 `config.custom_*` 与 `config.color_space`，本函数只负责按 `usage_mode` 选材。
+/// 感知压缩（perceptual）由 `quality_mode` 决定，调用方在返回后按需覆盖。
 pub fn app_config_to_process_config(
     config: &AppConfig,
     output_dir: Option<PathBuf>,
 ) -> ProcessConfig {
-    match config.mode {
-        ProcessMode::WeChat => ProcessConfig {
-            mode: ProcessMode::WeChat,
-            max_dim: 2048,
-            quality: 95,
-            target_kb: 900,
-            output_dir,
-            overwrite: config.overwrite,
-            keep_original_name: config.keep_original_name,
-            output_format: config.output_format,
-            color_space: config.color_space,
-            // 摄影级优化
-            enable_sharpening: config.enable_sharpening,
-            sharpening_radius: config.sharpening_radius,
-            sharpening_amount: config.sharpening_amount,
-            perceptual: None,
-        },
-        ProcessMode::HD => ProcessConfig {
-            mode: ProcessMode::HD,
-            max_dim: 4096,
-            quality: 95,
-            target_kb: 5000,
-            output_dir,
-            overwrite: config.overwrite,
-            keep_original_name: config.keep_original_name,
-            output_format: config.output_format,
-            color_space: config.color_space,
-            // 摄影级优化
-            enable_sharpening: config.enable_sharpening,
-            sharpening_radius: config.sharpening_radius,
-            sharpening_amount: config.sharpening_amount,
-            perceptual: None,
-        },
-        ProcessMode::Custom => ProcessConfig {
-            mode: ProcessMode::Custom,
-            max_dim: config.custom_max_dim,
-            quality: config.custom_quality,
-            target_kb: config.custom_target_kb,
-            output_dir,
-            overwrite: config.overwrite,
-            keep_original_name: config.keep_original_name,
-            output_format: config.output_format,
-            color_space: config.color_space,
-            // 摄影级优化
-            enable_sharpening: config.enable_sharpening,
-            sharpening_radius: config.sharpening_radius,
-            sharpening_amount: config.sharpening_amount,
-            perceptual: None,
-        },
+    let (mode, max_dim, quality, target_kb) = match config.usage_mode.as_str() {
+        "social" => (
+            ProcessMode::WeChat,
+            config.custom_max_dim,
+            config.custom_quality,
+            config.custom_target_kb,
+        ),
+        // archive：不缩放(0) + 视觉无损画质(95，同原版 HD) + 不限体积(0)；ProcessMode::HD 仅决定输出后缀 "_hd"
+        // 注意：不用 Q100 —— Q100 禁用量化几乎无压缩，输出会比源图更大，违背压缩工具语义
+        "archive" => (ProcessMode::HD, 0, 95, 0),
+        _ => {
+            // custom：完整保留 v4.1.0 三种旧模式语义（向后兼容铁律）
+            match config.mode {
+                ProcessMode::HD => (ProcessMode::HD, 4096, 95, 5000),
+                ProcessMode::WeChat => (ProcessMode::WeChat, 2048, 95, 900),
+                ProcessMode::Custom => (
+                    ProcessMode::Custom,
+                    config.custom_max_dim,
+                    config.custom_quality,
+                    config.custom_target_kb,
+                ),
+            }
+        }
+    };
+    ProcessConfig {
+        mode,
+        max_dim,
+        quality,
+        target_kb,
+        output_dir,
+        overwrite: config.overwrite,
+        keep_original_name: config.keep_original_name,
+        output_format: config.output_format,
+        color_space: config.color_space,
+        // 摄影级优化
+        enable_sharpening: config.enable_sharpening,
+        sharpening_radius: config.sharpening_radius,
+        sharpening_amount: config.sharpening_amount,
+        perceptual: None,
     }
 }
 

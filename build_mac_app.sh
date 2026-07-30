@@ -54,7 +54,7 @@ cat > "${APP_DIR}/Contents/Info.plist" << EOF
     <key>CFBundleExecutable</key>
     <string>${BINARY_NAME}</string>
     <key>CFBundleIconFile</key>
-    <string>AppIcon.icns</string>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.xtap.image-compressor</string>
     <key>CFBundleName</key>
