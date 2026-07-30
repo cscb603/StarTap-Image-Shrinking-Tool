@@ -5,7 +5,7 @@
 set -e
 
 APP_NAME="图片高速压缩"
-VERSION="4.1.0"
+VERSION="4.2.0"
 APP_DIR="${APP_NAME}.app"
 BINARY_NAME="ImageCompressor"
 
@@ -54,7 +54,7 @@ cat > "${APP_DIR}/Contents/Info.plist" << EOF
     <key>CFBundleExecutable</key>
     <string>${BINARY_NAME}</string>
     <key>CFBundleIconFile</key>
-    <string>AppIcon.icns</string>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.xtap.image-compressor</string>
     <key>CFBundleName</key>
