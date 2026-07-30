@@ -334,8 +334,8 @@ pub fn platform_preset(platform: &str) -> Option<(u32, u8, u32, bool)> {
         "wechat" => Some((1080, 92, 900, true)),
         // iOS 8.0.64+ 宽幅：长边≤2560，体积线放宽到 2000KB
         "wechat-new" => Some((2560, 90, 2000, true)),
-        // 竖版 3:4：高≤1440（宽1080），体积线取 500–1000 中值 800KB
-        "xiaohongshu" => Some((1440, 92, 800, true)),
+        // 竖版 3:4：高≤1660（宽1242），体积线 4500KB（官方单图≤5MB）
+        "xiaohongshu" => Some((1660, 92, 4500, true)),
         // 4:5：宽≤1080（长边封顶 1080 即保证宽≤1080），体积线建议≤1000KB
         "instagram" => Some((1080, 90, 1000, true)),
         // 通用（中画幅/网盘/非社交渠道）：长边 2560、Q92、2MB 线；不强转 sRGB（保留原色域）

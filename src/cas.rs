@@ -1,6 +1,6 @@
 //! v4.4.0：CAS 对比度自适应锐化（Contrast Adaptive Sharpening）
 //!
-//! 思路源自 AMD FidelityFX CAS（MIT 协议公开算法），纯 Rust 手写，零新依赖。
+//! 思路源自 AMD FidelityFX CAS 简化十字变体（MIT 协议公开算法），纯 Rust 手写，零新依赖。
 //! 专为「降采样后补偿锐度」设计，与 USM 的本质区别：
 //! - 输出 = 十字邻域加权平均（负权重中心增强），**构造上不产生过冲**——
 //!   结果永远落在邻域 min/max 附近，没有 USM 的白边/黑边光晕，观感自然。

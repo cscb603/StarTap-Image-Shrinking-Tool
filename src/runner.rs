@@ -56,7 +56,9 @@ pub(crate) fn load_config() -> Result<AppConfig> {
     }
     config.config_version = 2;
     if did_migrate {
-        let _ = save_config(&config);
+        if let Err(e) = save_config(&config) {
+            eprintln!("[WARN] 配置迁移保存失败（不影响使用，重开仍会尝试迁移）: {}", e);
+        }
     }
     Ok(config)
 }
@@ -1229,24 +1231,15 @@ pub(crate) fn run_json_mode(json_input: &JsonInput) -> Result<()> {
     // - 显式 quality_mode="perceptual" → 开；"normal" → 关
     // - 缺失但显式 usage_mode="social" → 开（新式调用，与 GUI 社交分享默认一致）
     // - 都缺失 → 跟随旧字段 perceptual（默认关 → v4.1.0 JSON 调用 100% 兼容）
-    let perceptual_on = match json_input.quality_mode.as_deref() {
-        Some("perceptual") => true,
-        Some("normal") => false,
-        // v4.4.0 画质优先：CAS 锐化补偿链路，不开感知管线（防双重锐化）
-        Some("max") => false,
-        Some(other) => {
+    // v4.4.0 修复：读 app_config.quality_mode 而非 json_input.quality_mode——
+    // 前面已将 quality_first 简写映射为 app_config.quality_mode="max"，如果还读
+    // json_input 原始值，quality_first+platform 组合下 perceptual_on 会误判为 true。
+    let perceptual_on = match app_config.quality_mode.as_str() {
+        "perceptual" => true,
+        "max" | "normal" => false,
+        other => {
             eprintln!("[WARN] 未知 quality_mode '{}'，按 normal 处理", other);
             false
-        }
-        None => {
-            // v4.4.0：quality_first 简写 = max，同样关感知（防双重锐化）
-            if json_input.quality_first == Some(true) {
-                false
-            } else if json_input.usage_mode.as_deref() == Some("social") {
-                true
-            } else {
-                json_input.perceptual.unwrap_or(false)
-            }
         }
     };
     process_config.perceptual = if perceptual_on {

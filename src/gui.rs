@@ -240,7 +240,8 @@ impl ImageCompressorApp {
             }
         }
 
-        // 画质模式：小而美(感知压缩) / 普通。高清存档已是最高画质，感知管线不介入。
+        // 画质模式：max(画质优先=apply_platform_preset设CAS) / perceptual(小而美=感知USM) / normal(普通)
+        // 仅 perceptual 在此激活感知管线；max 通过 apply_platform_preset 控制 CAS 强度，archive 始终不介入。
         let perceptual_on = config.quality_mode == "perceptual" && config.usage_mode != "archive";
         let platform_for_perceptual = config.platform.clone();
 
