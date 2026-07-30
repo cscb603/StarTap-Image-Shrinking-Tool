@@ -1401,32 +1401,32 @@ fn run_compare_mode(cli: &Cli, files: &[PathBuf]) -> Result<()> {
     if cli.benchmark {
         println!("\n=== 感知压缩 A/B 基准对比（旧 v4.1.0 vs 新感知路径）===");
         println!(
-            "{:<26} {:>9} {:>9} {:>9} {:>9} {:>7}",
-            "file", "old_KB", "new_KB", "oldSSIM", "newSSIM", "newQ"
+            "{:<24} {:>9} {:>9} {:>8} {:>8} {:>8} {:>8} {:>6} {:>7}",
+            "file", "old_KB", "new_KB", "oldSSIM", "newSSIM", "oldPSNR", "newPSNR", "ms", "newQ"
         );
     }
 
     let mut montage_rows: Vec<String> = Vec::new();
     for file in files {
+        let t0 = std::time::Instant::now();
         let old_r = process_one_file(&old_proc, file, force, overwrite);
         let new_r = process_one_file(&new_proc, file, force, overwrite);
+        let elapsed_ms = t0.elapsed().as_millis();
 
         let old_size = old_r.compressed_size.unwrap_or(0);
         let new_size = new_r.compressed_size.unwrap_or(0);
 
-        // 旧/新 各自与源图（降采样后）的 SSIM，外部核算、算法同源
-        let old_ssim = old_r
+        // 旧/新 各自与源图（降采样后）的 SSIM/PSNR，外部核算、算法同源
+        let (old_ssim, old_psnr) = old_r
             .output
             .as_ref()
             .and_then(|p| ssim_psnr_vs_source(file, Path::new(p)))
-            .map(|(s, _)| s)
-            .unwrap_or(f64::NAN);
-        let new_ssim = new_r
+            .unwrap_or((f64::NAN, f64::NAN));
+        let (new_ssim, new_psnr) = new_r
             .output
             .as_ref()
             .and_then(|p| ssim_psnr_vs_source(file, Path::new(p)))
-            .map(|(s, _)| s)
-            .unwrap_or(f64::NAN);
+            .unwrap_or((f64::NAN, f64::NAN));
         let new_q = new_r
             .perceptual
             .as_ref()
@@ -1435,7 +1435,7 @@ fn run_compare_mode(cli: &Cli, files: &[PathBuf]) -> Result<()> {
 
         if cli.benchmark {
             println!(
-                "{:<26} {:>9.1} {:>9.1} {:>9.4} {:>9.4} {:>7}",
+                "{:<24} {:>9.1} {:>9.1} {:>8.4} {:>8.4} {:>8.2} {:>8.2} {:>6} {:>7}",
                 file.file_name()
                     .map(|s| s.to_string_lossy())
                     .unwrap_or_default(),
@@ -1443,6 +1443,9 @@ fn run_compare_mode(cli: &Cli, files: &[PathBuf]) -> Result<()> {
                 new_size as f64 / 1024.0,
                 old_ssim,
                 new_ssim,
+                old_psnr,
+                new_psnr,
+                elapsed_ms,
                 new_q
             );
         }
