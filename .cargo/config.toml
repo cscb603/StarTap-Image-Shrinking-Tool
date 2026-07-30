@@ -1,16 +1,8 @@
-# Windows Static Linking Configuration
-# CRITICAL: Ensures the .exe is portable and doesn't require MSVC Redistributable DLLs.
-# This solves the "won't open on other computers" issue.
-
+# 交叉编译 Windows：静态链接 MSVC CRT，产出自包含 exe（用户无需装 VC++ 运行库）
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "target-cpu=x86-64-v2"]
 
-[target.i686-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
-
-[target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
-
-# For GNU toolchain (MinGW)
-[target.x86_64-pc-windows-gnu]
-rustflags = ["-C", "link-args=-static"]
+# 让 build.rs 找到 llvm-rc（brew LLVM），用于注入 exe 图标/DPI 清单
+# 仅交叉编译 Windows 时 build.rs 才读取此变量，macOS 原生构建不受影响
+[env]
+RC = "/opt/homebrew/opt/llvm/bin/llvm-rc"
