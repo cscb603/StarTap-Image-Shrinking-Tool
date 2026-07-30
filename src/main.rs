@@ -3,6 +3,20 @@
 mod cli;
 
 use anyhow::Result;
+
+// Windows 终端编码修正：统一 stdout/stderr 为 UTF-8，避免中文 log 在 GBK 终端显示乱码
+#[cfg(target_os = "windows")]
+fn fix_windows_console() {
+    unsafe {
+        extern "system" {
+            fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
+        }
+        SetConsoleOutputCP(65001); // CP_UTF8
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn fix_windows_console() {} // no-op on non-Windows
 use clap::Parser;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use eframe::egui;
@@ -15,9 +29,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cli::{Cli, FileResult, JsonInput, JsonOutput};
+use cli::{build_capabilities, build_envelope, Cli, FileResult, JsonInput};
 use rust_image_compressor::{
-    app_config_to_process_config, AppConfig, OutputFormat, ProcessMode, Processor,
+    app_config_to_process_config, AppConfig, ColorSpace, OutputFormat, ProcessMode, Processor,
 };
 
 fn get_config_file_path() -> Result<PathBuf> {
@@ -73,7 +87,10 @@ impl ImageCompressorApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = unbounded();
 
-        let config = load_config().unwrap_or_default();
+        let config = load_config().unwrap_or_else(|_| AppConfig {
+            custom_quality: 95,
+            ..Default::default()
+        });
 
         // 先设置视觉样式，避免窗口背景闪烁！
         let mut visuals = egui::Visuals::light();
@@ -149,7 +166,7 @@ impl ImageCompressorApp {
             show_about: false,
             show_advanced: false,
             custom_output_dir: None,
-            about_version: "v4.0.6".to_string(),
+            about_version: "v4.0.8".to_string(),
             tx,
             rx,
         }
@@ -163,18 +180,16 @@ impl ImageCompressorApp {
 
         for path in paths {
             if path.is_dir() {
-                if let Ok(entries) = fs::read_dir(&path) {
-                    for entry in entries.flatten() {
-                        let entry_path = entry.path();
-                        if entry_path.is_file() && is_supported_image(&entry_path) {
-                            self.files.push_back(FileItem {
-                                path: entry_path,
-                                processed: false,
-                                success: false,
-                                error: None,
-                            });
-                        }
-                    }
+                // GUI 总是递归收集（匹配 UI 上"自动递归处理子目录"的文案）
+                let mut temp = Vec::new();
+                collect_images(&path, &mut temp, true, 0, &mut Vec::new());
+                for p in temp {
+                    self.files.push_back(FileItem {
+                        path: p,
+                        processed: false,
+                        success: false,
+                        error: None,
+                    });
                 }
             } else if path.is_file() && is_supported_image(&path) {
                 self.files.push_back(FileItem {
@@ -532,7 +547,9 @@ impl eframe::App for ImageCompressorApp {
                                                 .speed(10.0)
                                                 .suffix(" px"),
                                             )
-                                            .on_hover_text("限制图片最长边像素，超出自动等比缩小（100–10000）");
+                                            .on_hover_text(
+                                                "限制图片最长边像素，超出自动等比缩小（100–10000）",
+                                            );
                                             ui.end_row();
 
                                             ui.label(
@@ -543,7 +560,9 @@ impl eframe::App for ImageCompressorApp {
                                                 &mut self.config.custom_quality,
                                                 1..=100,
                                             ))
-                                            .on_hover_text("数值越高越清晰、体积越大（微信/高清模式已固定）");
+                                            .on_hover_text(
+                                                "数值越高越清晰、体积越大（微信/高清模式已固定）",
+                                            );
                                             ui.end_row();
 
                                             ui.label(
@@ -831,10 +850,35 @@ impl eframe::App for ImageCompressorApp {
 }
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    // Windows 终端 UTF-8 编码修正（首行执行，避免中文 log 乱码）
+    fix_windows_console();
 
-    if args.len() > 1 {
+    // 用 args_os 判断,避免 Windows 上含非 UTF-8 路径时 panic
+    if std::env::args_os().count() > 1 {
         let cli = Cli::parse();
+
+        // 并行并发数：AI 可经 --max-workers 限流（在全局池首次使用前生效）
+        apply_max_workers(cli.max_workers);
+
+        // --capabilities 优先：输出版本支持的全部参数 schema
+        if cli.capabilities {
+            let caps = build_capabilities();
+            println!("{}", serde_json::to_string_pretty(&caps)?);
+            return Ok(());
+        }
+
+        // --self-check：环境自检，内置测试图走完整管线，输出健康报告后退出
+        if cli.self_check {
+            return run_self_check();
+        }
+
+        // --json-in 优先：直接传 JSON 字符串，AI 最稳的用法
+        if let Some(json_str) = &cli.json_in {
+            let json_input: JsonInput = serde_json::from_str(json_str)
+                .map_err(|e| anyhow::anyhow!("--json-in 解析失败: {}", e))?;
+            return run_json_mode(&json_input);
+        }
+
         return run_cli(&cli);
     }
 
@@ -886,39 +930,29 @@ fn load_icon() -> Option<IconData> {
 }
 
 fn run_cli(cli: &Cli) -> Result<()> {
-    // 先收集文件列表
+    // 先收集文件列表(目录默认递归;记录被拒路径用于提示)
     let mut files = Vec::new();
+    let mut rejected: Vec<(String, String)> = Vec::new();
+    let recursive = cli.recursive.unwrap_or(!cli.no_recursive);
 
     // 处理显式的--input参数
     for input_path in &cli.input {
-        if input_path.is_dir() {
-            if let Ok(entries) = fs::read_dir(input_path) {
-                for entry in entries.flatten() {
-                    let entry_path = entry.path();
-                    if entry_path.is_file() && is_supported_image(&entry_path) {
-                        files.push(entry_path);
-                    }
-                }
-            }
-        } else if input_path.is_file() && is_supported_image(input_path) {
-            files.push(input_path.clone());
-        }
+        classify_input(input_path, &mut files, &mut rejected, recursive);
     }
 
     // 处理SendTo传递的位置参数
     for input_path in &cli.positional {
-        if input_path.is_dir() {
-            if let Ok(entries) = fs::read_dir(input_path) {
-                for entry in entries.flatten() {
-                    let entry_path = entry.path();
-                    if entry_path.is_file() && is_supported_image(&entry_path) {
-                        files.push(entry_path);
-                    }
-                }
-            }
-        } else if input_path.is_file() && is_supported_image(input_path) {
-            files.push(input_path.clone());
-        }
+        classify_input(input_path, &mut files, &mut rejected, recursive);
+    }
+
+    // 应用 include/exclude 过滤
+    if let Some(ref include_glob) = cli.include {
+        let patterns: Vec<&str> = include_glob.split(',').map(|s| s.trim()).collect();
+        files.retain(|f| match_patterns(f, &patterns));
+    }
+    if let Some(ref exclude_glob) = cli.exclude {
+        let patterns: Vec<&str> = exclude_glob.split(',').map(|s| s.trim()).collect();
+        files.retain(|f| !match_patterns(f, &patterns));
     }
 
     // 如果是 JSON 模式
@@ -926,47 +960,131 @@ fn run_cli(cli: &Cli) -> Result<()> {
         // 先尝试从 stdin 读取 JSON
         let mut stdin_input = String::new();
         let stdin_result = std::io::stdin().read_to_string(&mut stdin_input);
-        
+
         if stdin_result.is_ok() && !stdin_input.trim().is_empty() {
             // 从 stdin 读到了 JSON，用 JSON 模式
             let json_input: JsonInput = serde_json::from_str(&stdin_input)?;
             return run_json_mode(&json_input);
         } else {
             // 没有从 stdin 读到 JSON，用 CLI 参数，但输出 JSON 格式
+            if files.is_empty() && (!cli.input.is_empty() || !cli.positional.is_empty()) {
+                eprintln!("\n⚠️ 没有可处理的文件。你给出的路径均无效：");
+                for (p, why) in &rejected {
+                    eprintln!("   • {} —— {}", p, why);
+                }
+                print_cli_hint();
+                std::process::exit(2);
+            }
             return run_cli_with_json_output(cli, &files);
         }
     }
 
-    // 普通 CLI 模式（非 JSON）
-    let app_config = cli.to_app_config();
-    let process_config = app_config_to_process_config(&app_config, cli.output_dir.clone());
-    let processor = Processor::new(process_config);
-
-    let _total = files.len();
-    let mut completed = 0;
-    let mut failed = 0;
-
-    for file in &files {
-        if !cli.quiet {
-            println!("Processing: {}", file.display());
+    // 普通 CLI 模式：输入无效时给出明确提示并退出(非 0),避免 AI/脚本误判为成功
+    if files.is_empty() && (!cli.input.is_empty() || !cli.positional.is_empty()) {
+        eprintln!("\n⚠️ 没有处理任何文件。你给出的路径均无效：");
+        for (p, why) in &rejected {
+            eprintln!("   • {} —— {}", p, why);
         }
-        match processor.process_image(file) {
-            Ok(output_path) => {
-                completed += 1;
-                if !cli.quiet {
-                    println!("  ✅ Success: {}", output_path.display());
-                }
-            }
-            Err(e) => {
-                failed += 1;
-                if !cli.quiet {
-                    println!("  ❌ Failed: {}", e);
-                }
-            }
-        }
+        print_cli_hint();
+        std::process::exit(2);
     }
 
-    if !cli.quiet {
+    if files.is_empty() {
+        // 完全没给参数：提示用法
+        eprintln!("未指定任何文件/目录。用 --help 查看用法。");
+        print_cli_hint();
+        std::process::exit(2);
+    }
+
+    // --dry-run 预演模式：只输出文件列表和配置，不压缩
+    if cli.dry_run {
+        if cli.quiet {
+            // 静默 dry-run：用标准信封格式（data.results 数组），AI 零分支解析
+            let results: Vec<FileResult> = files
+                .iter()
+                .map(|f| FileResult {
+                    input: f.display().to_string().replace('\\', "/"),
+                    success: true,
+                    ..Default::default()
+                })
+                .collect();
+            let envelope = build_envelope(&results, std::time::Instant::now());
+            println!("{}", serde_json::to_string(&envelope)?);
+        } else {
+            println!("\n🔍 [预演模式] 以下文件将被处理（未执行压缩）：");
+            println!("   文件数: {}", files.len());
+            println!("   模式:   {:?}", cli.mode);
+            println!("   质量:   {}", cli.quality);
+            println!("   长边:   {}", cli.max_dim);
+            let output_dir_display = cli
+                .output_dir
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "./compressed/".to_string());
+            println!("   输出到: {}", output_dir_display);
+            println!(
+                "   锐化:   {}",
+                if cli.enable_sharpening { "开" } else { "关" }
+            );
+            println!();
+            for f in &files {
+                println!("   📄 {}", f.display());
+            }
+            println!("\n✅ dry-run 完成，共 {} 个文件", files.len());
+        }
+        return Ok(());
+    }
+
+    let app_config = cli.to_app_config();
+
+    // CLI/AI 模式默认输出到 ./compressed/，不污染源目录
+    let effective_output_dir = cli
+        .output_dir
+        .clone()
+        .map(|p| {
+            if p.is_relative() {
+                std::env::current_dir().unwrap_or_default().join(&p)
+            } else {
+                p
+            }
+        })
+        .or_else(|| {
+            Some(
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join("compressed"),
+            )
+        });
+    let process_config = app_config_to_process_config(&app_config, effective_output_dir);
+    let processor = Processor::new(process_config);
+
+    // 多核并行处理，充分利用 CPU（统一走 process_one_file，支持幂等续跑/JSONL）
+    let quiet = cli.quiet;
+    let force = cli.force;
+    let overwrite = cli.overwrite;
+    let jsonl = cli.jsonl;
+    let results: Vec<FileResult> = files
+        .par_iter()
+        .map(|file| {
+            let r = process_one_file(&processor, file, force, overwrite);
+            if jsonl {
+                emit_jsonl(&r);
+            }
+            r
+        })
+        .collect();
+
+    let completed = results.iter().filter(|r| r.success).count();
+    let failed = results.len() - completed;
+
+    if !quiet && !jsonl {
+        for r in &results {
+            if r.success {
+                println!("  ✅ Success: {}", r.output.clone().unwrap_or_default());
+            } else {
+                println!("  ❌ Failed: {}", r.error.clone().unwrap_or_default());
+            }
+        }
         println!("\n✅ 处理完成！成功: {}, 失败: {}", completed, failed);
     }
 
@@ -977,60 +1095,319 @@ fn run_cli(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// 用 CLI 参数处理，但输出 JSON 格式
+/// CLI 输入无效时的通用「第一次用」避坑提示(给人类与 AI 看)
+fn print_cli_hint() {
+    eprintln!("\n💡 正确用法(避坑):");
+    eprintln!("   1) 路径含空格/中文,必须用引号包住整个路径:");
+    eprintln!("        Windows(cmd): 图片高速压缩.exe \"C:\\用户\\张三\\a b.jpg\"");
+    eprintln!("        macOS/Linux:  ./图片高速压缩 \"~/图片/我的照片.jpg\"");
+    eprintln!("      未加引号会被 shell 按空格拆成多段 → 找不到文件。");
+    eprintln!("   2) 目录默认递归处理子目录;空目录会得到 0 个文件。");
+    eprintln!("   3) RAW(.cr3/.nef/.arw…) 仅在 macOS 支持;Windows 请先转 JPG/PNG。");
+    eprintln!("   4) 给 AI/脚本最稳:用 --json 从 stdin 传路径数组(绕开 shell 分词);");
+    eprintln!("      或 Python subprocess 用列表传参(走 Unicode 命令行)。");
+    eprintln!();
+}
+
+/// 把命令行输入的路径分类:目录(递归收集)/受支持图片/格式不符/不存在
+fn classify_input(
+    input_path: &Path,
+    files: &mut Vec<PathBuf>,
+    rejected: &mut Vec<(String, String)>,
+    recursive: bool,
+) {
+    if input_path.is_dir() {
+        collect_images(input_path, files, recursive, 0, rejected);
+    } else if input_path.is_file() {
+        if is_supported_image(input_path) {
+            files.push(input_path.to_path_buf());
+        } else {
+            rejected.push((
+                input_path.display().to_string(),
+                "不是支持的图片格式".to_string(),
+            ));
+        }
+    } else {
+        let hint = if input_path.to_string_lossy().contains(' ') {
+            "(路径含空格却没加引号?shell 会按空格拆成多段导致找不到文件 —— 请用引号包住整个路径)"
+        } else {
+            ""
+        };
+        rejected.push((
+            input_path.display().to_string(),
+            format!("路径不存在或无法访问{}", hint),
+        ));
+    }
+}
+
+/// 递归收集目录下所有受支持图片(深度上限 20,防止符号链接环)
+fn collect_images(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    recursive: bool,
+    depth: usize,
+    _rejected: &mut Vec<(String, String)>,
+) {
+    if depth > 20 {
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_dir() {
+                    if recursive {
+                        collect_images(&p, out, recursive, depth + 1, _rejected);
+                    }
+                } else if meta.is_file() && is_supported_image(&p) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+}
+
+/// 用 CLI 参数处理，但输出标准 JSON 信封格式
 fn run_cli_with_json_output(cli: &Cli, files: &[PathBuf]) -> Result<()> {
+    let start = std::time::Instant::now();
     let app_config = cli.to_app_config();
-    let process_config = app_config_to_process_config(&app_config, cli.output_dir.clone());
+
+    // CLI/AI 模式默认输出到 ./compressed/
+    let effective_output_dir = cli
+        .output_dir
+        .clone()
+        .map(|p| {
+            if p.is_relative() {
+                std::env::current_dir().unwrap_or_default().join(&p)
+            } else {
+                p
+            }
+        })
+        .or_else(|| {
+            Some(
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join("compressed"),
+            )
+        });
+    let process_config = app_config_to_process_config(&app_config, effective_output_dir);
     let processor = Processor::new(process_config);
 
-    let mut results = Vec::new();
-    for file in files {
-        let file_str = file.display().to_string();
-        let original_size = fs::metadata(file).ok().map(|m| m.len());
+    let force = cli.force;
+    let jsonl = cli.jsonl;
+    let overwrite = cli.overwrite;
+    let results: Vec<FileResult> = files
+        .par_iter()
+        .map(|file| {
+            let result = process_one_file(&processor, file, force, overwrite);
+            if jsonl {
+                // 流式 JSONL：每处理完一个文件立即输出一行（println! 自带行级锁）
+                if let Ok(line) = serde_json::to_string(&result) {
+                    println!("{}", line);
+                }
+            }
+            result
+        })
+        .collect();
 
-        let (success, output, error) = match processor.process_image(file) {
-            Ok(output_path) => (true, Some(output_path.display().to_string()), None),
-            Err(e) => (false, None, Some(e.to_string())),
-        };
+    let envelope = build_envelope(&results, start);
+    println!("{}", serde_json::to_string(&envelope)?);
 
-        let compressed_size = output
-            .as_ref()
-            .and_then(|p| fs::metadata(Path::new(p)).ok().map(|m| m.len()));
-        let compression_ratio = if let (Some(orig), Some(comp)) = (original_size, compressed_size) {
-            Some(orig as f64 / comp as f64)
-        } else {
-            None
-        };
-
-        results.push(FileResult {
-            input: file_str,
-            output,
-            success,
-            error,
-            original_size,
-            compressed_size,
-            compression_ratio,
-        });
+    // 有失败时退出码 1，让 AI 脚本能检测
+    if envelope.data.failed > 0 {
+        std::process::exit(1);
     }
-
-    let total = results.len();
-    let completed = results.iter().filter(|r| r.success).count();
-    let failed = results.iter().filter(|r| !r.success).count();
-
-    let json_output = JsonOutput {
-        success: failed == 0,
-        total,
-        completed,
-        failed,
-        results,
-    };
-
-    println!("{}", serde_json::to_string(&json_output)?);
 
     Ok(())
 }
 
+/// 单文件处理（CLI-JSON / AI-JSON 两条通路共用）：
+/// 幂等续跑（输出已存在且未 force 则跳过）+ 路径归一化 + 完整指标
+fn process_one_file(
+    processor: &Processor,
+    file: &Path,
+    force: bool,
+    overwrite: bool,
+) -> FileResult {
+    let file_str = file.display().to_string().replace('\\', "/");
+
+    // 幂等续跑：输出已存在且未 force → 跳过（success=true, skipped=true）
+    if !force && !overwrite {
+        let expected = processor.expected_output_path(file);
+        if expected.exists() {
+            let original_size = fs::metadata(file).ok().map(|m| m.len());
+            let compressed_size = fs::metadata(&expected).ok().map(|m| m.len());
+            let compression_ratio = match (original_size, compressed_size) {
+                (Some(o), Some(c)) if c > 0 => Some(o as f64 / c as f64),
+                _ => None,
+            };
+            eprintln!("[INFO] 跳过（输出已存在，force 可强制重压）: {}", file_str);
+            return FileResult {
+                input: file_str,
+                output: Some(expected.display().to_string().replace('\\', "/")),
+                success: true,
+                error: None,
+                original_size,
+                compressed_size,
+                compression_ratio,
+                skipped: Some(true),
+            };
+        }
+    }
+
+    let original_size = fs::metadata(file).ok().map(|m| m.len());
+    let (success, output, error) = match processor.process_image(file) {
+        Ok(output_path) => (true, Some(output_path.display().to_string()), None),
+        Err(e) => (false, None, Some(e.to_string())),
+    };
+
+    let compressed_size = output
+        .as_ref()
+        .and_then(|p| fs::metadata(Path::new(p)).ok().map(|m| m.len()));
+    let compression_ratio = match (original_size, compressed_size) {
+        (Some(o), Some(c)) if c > 0 => Some(o as f64 / c as f64),
+        _ => None,
+    };
+
+    FileResult {
+        input: file_str,
+        output: output.map(|p| p.replace('\\', "/")),
+        success,
+        error,
+        original_size,
+        compressed_size,
+        compression_ratio,
+        skipped: None,
+    }
+}
+
+/// 设置 Rayon 全局并行线程数（仅在尚未初始化全局池时生效；重复设置被忽略）
+fn apply_max_workers(n: Option<usize>) {
+    if let Some(n) = n {
+        if n > 0 {
+            let _ = rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build_global();
+        }
+    }
+}
+
+/// 流式 JSONL：单行输出一个文件结果（println! 自带行级锁，跨线程安全）
+fn emit_jsonl(r: &FileResult) {
+    if let Ok(line) = serde_json::to_string(r) {
+        println!("{}", line);
+    }
+}
+
+/// 生成一张带渐变的测试图（避免纯色被编码优化成极小体积，导致自检失真）
+fn generate_test_image(width: u32, height: u32) -> image::RgbImage {
+    let mut img = image::RgbImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let r = (x * 255 / width) as u8;
+            let g = (y * 255 / height) as u8;
+            let b = ((x + y) * 255 / (width + height)) as u8;
+            img.put_pixel(x, y, image::Rgb([r, g, b]));
+        }
+    }
+    img
+}
+
+/// 环境自检：内置生成测试图，完整走一遍压缩管线，输出健康报告后退出
+fn run_self_check() -> Result<()> {
+    let start = std::time::Instant::now();
+    eprintln!("[INFO] 开始环境自检：生成测试图并走完整压缩管线...");
+
+    // 1) 生成测试图并落盘为临时输入
+    let width = 1024u32;
+    let height = 768u32;
+    let img = generate_test_image(width, height);
+    let tmp = std::env::temp_dir().join("rust_image_compressor_selfcheck");
+    fs::create_dir_all(&tmp)?;
+    let input_path = tmp.join("selfcheck_source.png");
+    image::DynamicImage::ImageRgb8(img)
+        .save(&input_path)
+        .map_err(|e| anyhow::anyhow!("测试图保存失败: {}", e))?;
+    let original_size = fs::metadata(&input_path).ok().map(|m| m.len()).unwrap_or(0);
+    eprintln!(
+        "[INFO] 生成测试图 {}x{} ({} bytes)",
+        width, height, original_size
+    );
+
+    // 2) 配置 + 处理（默认 custom + quality 85 + 长边 1000）
+    let app_config = AppConfig {
+        custom_quality: 85,
+        custom_max_dim: 1000,
+        ..Default::default()
+    };
+    let output_dir = tmp.join("out");
+    let process_config = app_config_to_process_config(&app_config, Some(output_dir.clone()));
+    let processor = Processor::new(process_config);
+    let result = process_one_file(&processor, &input_path, true, false);
+
+    // 3) 逐项校验
+    let ok_pipeline = result.success && result.output.is_some();
+    let compressed_size = result.compressed_size.unwrap_or(0);
+    let ok_size = compressed_size > 0 && compressed_size <= original_size;
+    let ok_decode = match &result.output {
+        Some(p) => image::open(Path::new(p)).is_ok(),
+        None => false,
+    };
+
+    let checks = serde_json::json!([
+        {
+            "name": "pipeline",
+            "passed": ok_pipeline,
+            "detail": if ok_pipeline { result.output.clone().unwrap_or_default() } else { result.error.clone().unwrap_or_default() }
+        },
+        {
+            "name": "output_size",
+            "passed": ok_size,
+            "detail": format!("原始 {} bytes → 压缩 {} bytes", original_size, compressed_size)
+        },
+        {
+            "name": "decode_output",
+            "passed": ok_decode,
+            "detail": if ok_decode { "压缩图可正常解码".to_string() } else { "无法解码压缩图".to_string() }
+        }
+    ]);
+
+    let all_passed = ok_pipeline && ok_size && ok_decode;
+    let ratio = if compressed_size > 0 {
+        original_size as f64 / compressed_size as f64
+    } else {
+        0.0
+    };
+    let report = serde_json::json!({
+        "schema_version": "1.0",
+        "command": "self-check",
+        "status": if all_passed { "succeeded" } else { "failed" },
+        "version": env!("CARGO_PKG_VERSION"),
+        "elapsed_ms": start.elapsed().as_millis(),
+        "checks": checks,
+        "metrics": {
+            "original_bytes": original_size,
+            "compressed_bytes": compressed_size,
+            "bytes_saved": original_size.saturating_sub(compressed_size),
+            "ratio": ratio
+        }
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+
+    // 4) 清理临时目录（best-effort）
+    let _ = fs::remove_dir_all(&tmp);
+
+    if all_passed {
+        eprintln!("[INFO] ✅ 环境自检通过");
+        Ok(())
+    } else {
+        eprintln!("[ERROR] ❌ 环境自检未通过，请检查二进制/依赖");
+        std::process::exit(1);
+    }
+}
+
 fn run_json_mode(json_input: &JsonInput) -> Result<()> {
+    let start = std::time::Instant::now();
     let mut app_config = AppConfig::default();
 
     if let Some(mode_str) = &json_input.mode {
@@ -1065,55 +1442,221 @@ fn run_json_mode(json_input: &JsonInput) -> Result<()> {
         }
     }
 
-    let output_dir = json_input.output_dir.as_ref().map(PathBuf::from);
+    // 摄影级优化参数
+    if let Some(v) = json_input.enable_sharpening {
+        app_config.enable_sharpening = v;
+    }
+    if let Some(v) = json_input.sharpening_radius {
+        app_config.sharpening_radius = v;
+    }
+    if let Some(v) = json_input.sharpening_amount {
+        app_config.sharpening_amount = v;
+    }
+    if let Some(v) = json_input.use_custom_quantization {
+        app_config.use_custom_quantization = v;
+    }
+    if let Some(v) = json_input.preserve_high_frequency {
+        app_config.preserve_high_frequency = v;
+    }
+    if let Some(cs) = &json_input.color_space {
+        match cs.to_lowercase().as_str() {
+            "srgb" | "convert" => app_config.color_space = ColorSpace::ConvertToSRGB,
+            _ => app_config.color_space = ColorSpace::KeepOriginal,
+        }
+    }
+
+    // 输出目录：未指定时默认 ./compressed/，不污染源目录
+    let output_dir = json_input
+        .output_dir
+        .as_ref()
+        .map(|p| {
+            let pb = PathBuf::from(p);
+            if pb.is_relative() {
+                std::env::current_dir().unwrap_or_default().join(&pb)
+            } else {
+                pb
+            }
+        })
+        .or_else(|| {
+            Some(
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join("compressed"),
+            )
+        });
+
+    // 预演模式：只输出文件列表和配置，不压缩（标准信封格式）
+    let is_dry_run = json_input.dry_run.unwrap_or(false);
+    if is_dry_run {
+        let dry_files = expand_file_list(&json_input.files);
+        // dry-run 同样执行存在性/可读性校验，与真实执行 Schema 完全对齐
+        let results: Vec<FileResult> = dry_files
+            .iter()
+            .map(|f| {
+                let p = Path::new(f);
+                let (success, error) = if !p.exists() || !p.is_file() {
+                    (false, Some(format!("路径不存在或不是文件: {}", f)))
+                } else if !is_supported_image(p) {
+                    (false, Some(format!("不支持的图片格式: {}", f)))
+                } else {
+                    (true, None)
+                };
+                FileResult {
+                    input: f.replace('\\', "/"),
+                    success,
+                    error,
+                    original_size: fs::metadata(p).ok().map(|m| m.len()),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let envelope = build_envelope(&results, std::time::Instant::now());
+        println!("{}", serde_json::to_string(&envelope)?);
+        return Ok(());
+    }
+
+    // P0-FIX: 展开目录 → 得到完整文件列表（目录自动递归扫描内部图片）
+    let all_entries = expand_file_list(&json_input.files);
+    let total_entries = all_entries.len();
+
+    if total_entries == 0 {
+        eprintln!("[ERROR] 没有可处理的文件");
+        let envelope = build_envelope(&[], start);
+        println!("{}", serde_json::to_string(&envelope)?);
+        std::process::exit(1);
+    }
+
+    // 校验输出目录
+    if let Some(ref dir) = output_dir {
+        if let Some(parent) = dir.parent() {
+            if !parent.exists() {
+                eprintln!("[WARN] 输出目录的父目录不存在: {}", dir.display());
+            }
+        }
+    }
+
+    // 并行并发数：AI 可经 max_workers 限流（仅在全局池尚未初始化时生效）
+    apply_max_workers(json_input.max_workers);
+
     let process_config = app_config_to_process_config(&app_config, output_dir);
     let processor = Processor::new(process_config);
 
-    let mut results = Vec::new();
-    for file_str in &json_input.files {
-        let path = Path::new(file_str);
-        let original_size = fs::metadata(path).ok().map(|m| m.len());
+    let force = json_input.force.unwrap_or(false);
+    let overwrite = app_config.overwrite;
+    let jsonl = json_input.jsonl.unwrap_or(false);
 
-        let (success, output, error) = match processor.process_image(path) {
-            Ok(output_path) => (true, Some(output_path.display().to_string()), None),
-            Err(e) => (false, None, Some(e.to_string())),
-        };
+    // P0-FIX: 所有输入条目保留在 results 内（不存在或格式不符自动标记失败）
+    let results: Vec<FileResult> = all_entries
+        .par_iter()
+        .map(|entry| {
+            let path = Path::new(entry);
 
-        let compressed_size = output
-            .as_ref()
-            .and_then(|p| fs::metadata(Path::new(p)).ok().map(|m| m.len()));
-        let compression_ratio = if let (Some(orig), Some(comp)) = (original_size, compressed_size) {
-            Some(orig as f64 / comp as f64)
-        } else {
-            None
-        };
+            // 路径不存在 → 标记失败，保留结果到 results
+            if !path.exists() || !path.is_file() {
+                let r = FileResult {
+                    input: entry.replace('\\', "/"),
+                    success: false,
+                    error: Some(format!("路径不存在或不是文件: {}", entry)),
+                    ..Default::default()
+                };
+                if jsonl {
+                    emit_jsonl(&r);
+                }
+                return r;
+            }
 
-        results.push(FileResult {
-            input: file_str.clone(),
-            output,
-            success,
-            error,
-            original_size,
-            compressed_size,
-            compression_ratio,
-        });
+            // 不支持的格式 → 标记失败
+            if !is_supported_image(path) {
+                let r = FileResult {
+                    input: entry.replace('\\', "/"),
+                    success: false,
+                    error: Some(format!("不支持的图片格式: {}", entry)),
+                    ..Default::default()
+                };
+                if jsonl {
+                    emit_jsonl(&r);
+                }
+                return r;
+            }
+
+            // 正常处理（process_one_file 内含幂等续跑跳过逻辑）
+            let r = process_one_file(&processor, path, force, overwrite);
+            if jsonl {
+                emit_jsonl(&r);
+            }
+            r
+        })
+        .collect();
+
+    let envelope = build_envelope(&results, start);
+    println!("{}", serde_json::to_string(&envelope)?);
+
+    // P0-FIX: 存在任意失败即退出码 1
+    if envelope.data.failed > 0 {
+        std::process::exit(1);
     }
 
-    let total = results.len();
-    let completed = results.iter().filter(|r| r.success).count();
-    let failed = results.iter().filter(|r| !r.success).count();
-
-    let json_output = JsonOutput {
-        success: failed == 0,
-        total,
-        completed,
-        failed,
-        results,
-    };
-
-    println!("{}", serde_json::to_string(&json_output)?);
-
     Ok(())
+}
+
+/// 展开文件数组：自动识别目录并递归扫描内部图片
+fn expand_file_list(files: &[String]) -> Vec<String> {
+    let mut entries = Vec::new();
+    for f in files {
+        let path = Path::new(f);
+        if path.is_dir() {
+            let mut scanned = Vec::new();
+            let mut rejected = Vec::new();
+            collect_images(path, &mut scanned, true, 0, &mut rejected);
+            for file in scanned {
+                if let Some(s) = file.to_str() {
+                    entries.push(s.to_string());
+                }
+            }
+        } else {
+            entries.push(f.clone());
+        }
+    }
+    entries
+}
+
+/// 简单的通配符匹配：支持 *（匹配任意字符）和 ?（匹配单个字符）
+fn wildcard_match(name: &str, pattern: &str) -> bool {
+    let name_chars: Vec<char> = name.chars().collect();
+    let pat_chars: Vec<char> = pattern.chars().collect();
+    let mut n = 0;
+    let mut p = 0;
+    let mut star_n = None;
+    let mut star_p = None;
+
+    while n < name_chars.len() {
+        if p < pat_chars.len() && (pat_chars[p] == '?' || pat_chars[p] == name_chars[n]) {
+            n += 1;
+            p += 1;
+        } else if p < pat_chars.len() && pat_chars[p] == '*' {
+            star_n = Some(n);
+            star_p = Some(p);
+            p += 1;
+        } else if let (Some(sn), Some(sp)) = (star_n, star_p) {
+            n = sn + 1;
+            star_n = Some(n);
+            p = sp + 1;
+        } else {
+            return false;
+        }
+    }
+
+    while p < pat_chars.len() && pat_chars[p] == '*' {
+        p += 1;
+    }
+
+    p == pat_chars.len()
+}
+
+/// 用一组模式匹配文件名（任一模式匹配即返回 true）
+fn match_patterns(path: &Path, patterns: &[&str]) -> bool {
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    patterns.iter().any(|p| wildcard_match(file_name, p))
 }
 
 fn is_supported_image(path: &Path) -> bool {
