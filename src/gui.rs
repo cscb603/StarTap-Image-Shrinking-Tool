@@ -158,7 +158,7 @@ impl ImageCompressorApp {
             show_about: false,
             show_advanced: false,
             custom_output_dir: None,
-            about_version: "v4.3.0-exp".to_string(),
+            about_version: "v4.3.0".to_string(),
             stop_flag: Arc::new(AtomicBool::new(false)),
             stop_requested: false,
             stopped: false,

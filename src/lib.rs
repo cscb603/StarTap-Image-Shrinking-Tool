@@ -660,15 +660,18 @@ fn preserve_exif_safe(input_path: &Path, result_data: &[u8]) -> Vec<u8> {
         Err(_) => return result_data.to_vec(),
     };
 
-    // P4：遍历所有 APP1(0xE1) 段，EXIF 与 ICC_PROFILE 都保留
-    // （v4.2.0 只取首个 0xE1 会丢宽色域 ICC 配置，违背"保证原图色彩"）
-    let app1_segments: Vec<_> = input_jpeg
+    // P4（升级 v4.3.0）：保留所有 APP 段（marker 0xE0–0xEF），零元数据损失。
+    // 覆盖 EXIF(APP1)、XMP(APP1)、ICC 色彩配置(APP2 ICC_PROFILE)、MPF(APP2)、
+    // Adobe IRB(APP13)/Adobe(APP14) 等。v4.2.0 只取首个 APP1(0xE1) 会丢 XMP 与
+    // 宽色域 ICC 配置（ICC 在 APP2），违背"保证原图色彩"。
+    // 注意：DQT/DHT/SOF/SOS 等不在 0xE0–0xEF 范围，不会被重复插入。
+    let meta_segments: Vec<_> = input_jpeg
         .segments()
         .iter()
-        .filter(|s| s.marker() == 0xE1)
+        .filter(|s| (0xE0..=0xEF).contains(&s.marker()))
         .cloned()
         .collect();
-    if app1_segments.is_empty() {
+    if meta_segments.is_empty() {
         return result_data.to_vec();
     }
 
@@ -681,9 +684,9 @@ fn preserve_exif_safe(input_path: &Path, result_data: &[u8]) -> Vec<u8> {
     };
 
     let mut output_jpeg = output_jpeg;
-    // 从位置 1 起依次插入每个 APP1 段（保持原顺序：EXIF 与 ICC 均保留）
+    // 从位置 1 起依次插入每个 APP 段（保持原顺序：EXIF / XMP / ICC 均保留）
     let mut insert_pos = 1;
-    for seg in &app1_segments {
+    for seg in &meta_segments {
         output_jpeg.segments_mut().insert(insert_pos, seg.clone());
         insert_pos += 1;
     }
