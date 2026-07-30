@@ -12,8 +12,8 @@
     <string>图片高速压缩</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>3.2</string>
+	<key>CFBundleShortVersionString</key>
+	<string>4.1.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
     <key>NSHighResolutionCapable</key>
