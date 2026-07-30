@@ -497,12 +497,30 @@ pub fn masked_usm_sharpen(
 // - 空间频率 f(u,v) = sqrt(u²+v²) * fs/16（fs≈32 cyc/deg，普通观看距离）
 // - CSF(f) = 2.6·(0.0192+0.114f)·exp(-(0.114f)^1.1)（Mannos & Sakrison 1974）
 // - 量化步长 ∝ 1/CSF：人眼敏感的中低频少砍，不敏感的高频多砍
-// - 亮度表 DC 锚定 12（对齐内置 MsSsim 表锚点），色度表 DC 锚定 17 且高频压制更陡
-//   （人眼对色度高频远不敏感 → 码率让位给亮度细节）
+// - CSF 感知量化表：以「标准 JPEG 量化表」为基底，用 Mannos-Sakrison CSF 敏感度做逐系数调制。
+//   可见频带（CSF 高于均值）→ 更细量化（多给码率）；不可见频带（高频/色度高频）→ 更粗量化（让码率）。
+//   调制比用「均值归一化」锚定到平均≈1，整体码率预算与同 quality 标准表持平（避免朴素 CSF 表体积暴涨）。
+
+/// JPEG Annex-K 标准亮度量化表基底（quality=50 基准）
+const STD_LUMA_BASE: [u16; 64] = [
+    16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69,
+    56, 14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81,
+    104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99,
+];
+/// JPEG Annex-K 标准色度量化表基底（quality=50 基准）
+const STD_CHROMA_BASE: [u16; 64] = [
+    17, 18, 24, 47, 99, 99, 99, 99, 18, 21, 26, 66, 99, 99, 99, 99, 24, 26, 56, 99, 99, 99, 99, 99,
+    47, 66, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+];
 
 /// 生成按 quality 缩放后的 CSF 感知量化表 (luma, chroma)
+///
+/// 实现方式：先按 libjpeg 公式生成同 quality 的标准表，再用「均值归一化」的 CSF 敏感度逐系数调制
+/// （csf[i] = 标准表[i] / (sens[i]/mean_sens)）。平均调制比≈1 → 总码率与标准表持平；
+/// 人眼更敏感的频带被加细（码率↑），更不敏感的频带被加粗（码率↓）→ 感知画质↑、体积不涨。
 pub fn csf_quant_tables(quality: u8) -> ([u16; 64], [u16; 64]) {
-    // Mannos-Sakrison CSF，峰值归一化前的原始形式
+    // Mannos-Sakrison CSF（原始形式，未归一化）
     let csf = |f: f64| -> f64 {
         if f < 1e-6 {
             1.0
@@ -524,37 +542,60 @@ pub fn csf_quant_tables(quality: u8) -> ([u16; 64], [u16; 64]) {
         csf_peak = csf_peak.max(csf(i as f64 * 0.5));
     }
 
-    let mut luma_base = [0f64; 64];
-    let mut chroma_base = [0f64; 64];
-    for v in 0..8 {
-        for u in 0..8 {
-            let i = v * 8 + u;
-            let f = freq(u, v);
-            // 敏感度权重：峰值处 1.0，高频衰减 → 步长放大；下限防爆炸
-            let sens = (csf(f) / csf_peak).clamp(0.04, 1.0);
-            // 亮度：锚点 12/敏感度，高频最大约 12/0.04=300 → 后面 clamp 255
-            luma_base[i] = 12.0 / sens;
-            // 色度：锚点 17，衰减指数更陡（sens^1.35 → 高频砍更狠）
-            chroma_base[i] = 17.0 / sens.powf(1.35);
-        }
-    }
-    // DC 系数特殊处理：块平均亮度，量化过粗会块状伪影 → 手动锚定
-    luma_base[0] = 12.0;
-    chroma_base[0] = 17.0;
-
     // libjpeg quality 缩放公式（Custom 表不被 jpeg-encoder 缩放，必须自己做）
     let q = quality.clamp(1, 100) as u32;
     let scale = if q < 50 { 5000 / q } else { 200 - q * 2 };
-    let apply = |base: &[f64; 64]| -> [u16; 64] {
+    let std_table = |base: &[u16; 64]| -> [u16; 64] {
         let mut out = [0u16; 64];
         for (o, &b) in out.iter_mut().zip(base.iter()) {
-            let v = (b * scale as f64 + 50.0) / 100.0;
+            let v = (b as f64 * scale as f64 + 50.0) / 100.0;
             *o = (v.round() as u16).clamp(1, 255);
         }
         out
     };
+    let std_luma = std_table(&STD_LUMA_BASE);
+    let std_chroma = std_table(&STD_CHROMA_BASE);
 
-    (apply(&luma_base), apply(&chroma_base))
+    // 第一遍：算每个 AC 系数的归一化敏感度（色度指数更陡），并求均值用于预算平衡
+    let mut luma_sens = [0f64; 64];
+    let mut chroma_sens = [0f64; 64];
+    let mut luma_sum = 0f64;
+    let mut chroma_sum = 0f64;
+    for v in 0..8 {
+        for u in 0..8 {
+            let i = v * 8 + u;
+            let f = freq(u, v);
+            let s = csf(f) / csf_peak;
+            luma_sens[i] = s.clamp(0.05, 1.0);
+            chroma_sens[i] = s.powf(1.35).clamp(0.05, 1.0);
+            if i != 0 {
+                luma_sum += luma_sens[i];
+                chroma_sum += chroma_sens[i];
+            }
+        }
+    }
+    let luma_mean = luma_sum / 63.0;
+    let chroma_mean = chroma_sum / 63.0;
+
+    // 第二遍：调制（DC 不调制，防块状伪影）。m = sens/mean：可见频带 m>1→更细，不可见 m<1→更粗
+    let build = |std: &[u16; 64], sens: &[f64; 64], mean: f64| -> [u16; 64] {
+        let mut out = [0u16; 64];
+        for v in 0..8 {
+            for u in 0..8 {
+                let i = v * 8 + u;
+                if i == 0 {
+                    out[i] = std[0];
+                    continue;
+                }
+                let m = (sens[i] / mean).clamp(0.3, 3.0);
+                let val = std[i] as f64 / m;
+                out[i] = (val.round() as u16).clamp(1, 255);
+            }
+        }
+        out
+    };
+
+    (build(&std_luma, &luma_sens, luma_mean), build(&std_chroma, &chroma_sens, chroma_mean))
 }
 
 // ============================================================================
