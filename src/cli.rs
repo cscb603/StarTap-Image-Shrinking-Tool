@@ -136,6 +136,54 @@ pub struct Cli {
     #[arg(long)]
     pub self_check: bool,
 
+    // ========== v4.2.0-exp 感知压缩（仅 CLI/AI 开放，GUI 锁死 v4.1.0） ==========
+    /// 开启感知压缩模式：降噪+显著性锐化+感知量化表（默认关，旧行为完全不变）
+    #[arg(long)]
+    pub perceptual: bool,
+
+    /// 降噪强度 0-100（默认 25，仅 --perceptual 生效；JPG 输入自动跳过降噪防块效应）
+    #[arg(long, value_name = "0-100", default_value_t = 25)]
+    pub denoise_strength: u8,
+
+    /// 锐化焦点：auto=显著性检测（主体自动识别），center=中心权重
+    #[arg(long, value_enum, default_value = "auto")]
+    pub focus_mode: CliFocusMode,
+
+    /// 感知量化表：csf=自算CSF感知表(默认) / msssim=内置MS-SSIM调优表 / standard=v4.1.0标准表
+    #[arg(long, value_enum, default_value = "csf")]
+    pub quant_mode: CliQuantMode,
+
+    /// 画质模式：perceptual=小而美感知压缩(同体积画质更好) / normal=普通标准压缩。
+    /// 未指定时跟随 --perceptual 旗标（不给任何新参数 = v4.1.0 旧行为完全不变）
+    #[arg(long, value_enum)]
+    pub quality_mode: Option<CliQualityMode>,
+
+    /// 用途预设：social=社交分享(按平台预设卡体积线) / archive=高清存档(不缩放+最高画质) / custom=自定义。
+    /// 未指定时：给了 --platform 视为 social，否则 custom（旧参数语义不变）
+    #[arg(long, value_enum)]
+    pub usage_mode: Option<CliUsageMode>,
+
+    /// 平台阈值预设（§2 实测表）：选后自动填长边/体积/Q 并强制 sRGB，规避平台二压
+    /// wechat=保守1080/900KB | wechat-new=iOS新宽幅2560/2000KB | xiaohongshu=1440/800KB | instagram=1080/1000KB
+    #[arg(long, value_enum)]
+    pub platform: Option<CliPlatform>,
+
+    /// 覆盖平台默认体积安全线（KB）：触发质量二分搜索压到线内，防止微信/小红书/IG 二次重压
+    #[arg(long)]
+    pub target_budget_kb: Option<u32>,
+
+    /// 感知模式质量上限（默认95，防止过度堆质量爆体积）
+    #[arg(long)]
+    pub quality_ceil: Option<u8>,
+
+    /// A/B 对照模式：同一图分别跑旧路径(v4.1.0)与新感知路径，输出 old/new 对照图 + 并排 montage 到 ab_output/
+    #[arg(long)]
+    pub ab: bool,
+
+    /// 基准对比模式：输出 体积/SSIM/PSNR/各步耗时 对比表（旧路径 vs 新感知路径）
+    #[arg(long)]
+    pub benchmark: bool,
+
     #[arg(value_name = "FILE/DIR")]
     pub positional: Vec<PathBuf>,
 }
@@ -157,6 +205,115 @@ pub enum CliOutputFormat {
 pub enum CliColorSpace {
     Keep,
     SRgb,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CliFocusMode {
+    Auto,
+    Center,
+}
+
+impl From<CliFocusMode> for rust_image_compressor::perceptual::FocusMode {
+    fn from(m: CliFocusMode) -> Self {
+        match m {
+            CliFocusMode::Auto => Self::Auto,
+            CliFocusMode::Center => Self::Center,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CliQuantMode {
+    Standard,
+    Msssim,
+    Csf,
+}
+
+impl From<CliQuantMode> for rust_image_compressor::perceptual::QuantMode {
+    fn from(m: CliQuantMode) -> Self {
+        match m {
+            CliQuantMode::Standard => Self::Standard,
+            CliQuantMode::Msssim => Self::MsSsim,
+            CliQuantMode::Csf => Self::Csf,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CliPlatform {
+    Wechat,
+    WechatNew,
+    Xiaohongshu,
+    Instagram,
+    General,
+}
+
+impl CliPlatform {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CliPlatform::Wechat => "wechat",
+            CliPlatform::WechatNew => "wechat-new",
+            CliPlatform::Xiaohongshu => "xiaohongshu",
+            CliPlatform::Instagram => "instagram",
+            CliPlatform::General => "general",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CliQualityMode {
+    /// 小而美：感知压缩（CSF 量化表），同体积画质更好
+    Perceptual,
+    /// 普通：v4.1.0 标准压缩
+    Normal,
+}
+
+impl CliQualityMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CliQualityMode::Perceptual => "perceptual",
+            CliQualityMode::Normal => "normal",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CliUsageMode {
+    /// 社交分享：平台预设（长边/体积线/Q/sRGB）防二压
+    Social,
+    /// 高清存档：不缩放 + 最高画质 + 不限体积
+    Archive,
+    /// 自定义：完全按 --mode/--max-dim/--quality/--target-kb
+    Custom,
+}
+
+impl CliUsageMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CliUsageMode::Social => "social",
+            CliUsageMode::Archive => "archive",
+            CliUsageMode::Custom => "custom",
+        }
+    }
+}
+
+/// 平台阈值预设（蓝图 §2 实测表，2025–2026）
+/// 返回：(长边 px 上限, 本地 JPEG Q, 体积安全线 KB, 强制 sRGB)
+/// 本地 Q 必须 ≥80（平台二压吞 5–10 点，本地留余地）；强制 sRGB 防社交 CDN 扁平化。
+pub fn platform_preset(platform: &str) -> Option<(u32, u8, u32, bool)> {
+    match platform.to_lowercase().as_str() {
+        // 保守：短边≤1080 用长边上限 1080 直接卡死，兼容所有微信版本
+        "wechat" => Some((1080, 92, 900, true)),
+        // iOS 8.0.64+ 宽幅：长边≤2560，体积线放宽到 2000KB
+        "wechat-new" => Some((2560, 90, 2000, true)),
+        // 竖版 3:4：高≤1440（宽1080），体积线取 500–1000 中值 800KB
+        "xiaohongshu" => Some((1440, 92, 800, true)),
+        // 4:5：宽≤1080（长边封顶 1080 即保证宽≤1080），体积线建议≤1000KB
+        "instagram" => Some((1080, 90, 1000, true)),
+        // 通用（中画幅/网盘/非社交渠道）：长边 2560、Q92、2MB 线；不强转 sRGB（保留原色域）
+        "general" => Some((2560, 92, 2000, false)),
+        _ => None,
+    }
 }
 
 // ============================================================================
@@ -201,6 +358,24 @@ pub struct JsonInput {
     pub jsonl: Option<bool>,
     /// 最大并行 worker 数
     pub max_workers: Option<usize>,
+
+    // ========== v4.2.0-exp 感知压缩（AI 用 --json-in，全部 Optional，缺失回退 v4.1.0） ==========
+    /// 开启感知压缩模式（降噪+显著性锐化+感知量化表）
+    pub perceptual: Option<bool>,
+    /// 降噪强度 0-100（仅 perceptual 生效；JPG 输入自动跳过降噪）
+    pub denoise_strength: Option<u8>,
+    /// 锐化焦点：auto=显著性检测 / center=中心权重
+    pub focus_mode: Option<String>,
+    /// 覆盖平台默认体积安全线（KB），触发质量二分搜索
+    pub target_budget_kb: Option<u32>,
+    /// 感知模式质量上限（防止过度堆质量爆体积）
+    pub quality_ceil: Option<u8>,
+    /// 平台阈值预设：wechat / wechat-new / xiaohongshu / instagram（自动填长边/体积/Q 并强制 sRGB）
+    pub platform: Option<String>,
+    /// 用途预设：social(社交分享) / archive(高清存档) / custom(自定义)。GUI 用；CLI 可省略
+    pub usage_mode: Option<String>,
+    /// 画质模式：perceptual(小而美感知压缩) / normal(普通标准压缩)
+    pub quality_mode: Option<String>,
 }
 
 // ============================================================================
@@ -267,6 +442,49 @@ pub struct FileResult {
     /// 幂等续跑：输出已存在且未 --force 时跳过（success=true, skipped=true）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped: Option<bool>,
+    /// v4.2.0-exp 感知压缩指标（perceptual=None 时缺省，向下兼容）；字段缺省不输出
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub perceptual: Option<PerceptualMetricsOut>,
+}
+
+/// 感知压缩单文件指标（§5.3，输出到 FileResult.perceptual；旧字段缺失时整块缺省）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct PerceptualMetricsOut {
+    pub perceptual_mode: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quant_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denoise_strength: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus_mode: Option<String>,
+    /// 实际命中的体积安全线（KB）；0 表示未设预算
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_budget_kb: Option<f64>,
+    /// 与源图（降采样后）的 SSIM
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssim_vs_source: Option<f64>,
+    /// 与源图（降采样后）的 PSNR(dB)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub psnr_vs_source: Option<f64>,
+    /// 实际编码质量（预算二分后）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_quality: Option<u8>,
+    /// 各步耗时（ms），可观测性
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_timings: Option<StepTimings>,
+}
+
+/// 各步耗时（ms）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct StepTimings {
+    pub denoise_ms: u64,
+    pub downscale_ms: u64,
+    pub sharpen_ms: u64,
+    pub encode_ms: u64,
 }
 
 // ============================================================================
@@ -362,7 +580,13 @@ pub fn build_capabilities() -> Capabilities {
                 "dry_run": {"type": "boolean", "default": false, "description": "预演模式，不执行压缩"},
                 "force": {"type": "boolean", "default": false, "description": "强制重压：即使输出已存在也重新压缩（默认已存在则跳过，幂等续跑）"},
                 "jsonl": {"type": "boolean", "default": false, "description": "流式 JSONL：每处理完一个文件立即输出一行 JSON，末尾追加汇总信封"},
-                "max_workers": {"type": "integer", "default": null, "description": "最大并行 worker 数（默认=CPU 核心数），大批量场景可限流"}
+                "max_workers": {"type": "integer", "default": null, "description": "最大并行 worker 数（默认=CPU 核心数），大批量场景可限流"},
+                "perceptual": {"type": "boolean", "default": false, "description": "开启感知压缩模式（降噪+显著性锐化+感知量化表），缺省回退 v4.1.0"},
+                "denoise_strength": {"type": "integer", "min": 0, "max": 100, "default": 25, "description": "降噪强度，仅 perceptual 生效；JPG 输入自动跳过"},
+                "focus_mode": {"type": "string", "enum": ["auto", "center"], "default": "auto", "description": "锐化焦点：auto=显著性检测 / center=中心权重"},
+                "target_budget_kb": {"type": "integer", "default": null, "description": "覆盖平台默认体积安全线（KB），触发质量二分搜索"},
+                "quality_ceil": {"type": "integer", "min": 1, "max": 100, "default": 95, "description": "感知模式质量上限，防止过度堆质量爆体积"},
+                "platform": {"type": "string", "enum": ["wechat", "wechat-new", "xiaohongshu", "instagram"], "default": null, "description": "平台阈值预设，自动填长边/体积/Q 并强制 sRGB"}
             }
         }),
         cli_parameters: vec![
@@ -576,12 +800,68 @@ pub fn build_capabilities() -> Capabilities {
                 available_values: None,
             },
             CliParamDoc {
+                name: "--platform".into(),
+                short: None,
+                kind: "STRING".into(),
+                default: "(无)".into(),
+                description: "平台阈值预设：wechat/wechat-new/xiaohongshu/instagram/general，自动填长边/体积/Q（general 不强转 sRGB，其余强制）".into(),
+                available_values: Some(vec!["wechat".into(), "wechat-new".into(), "xiaohongshu".into(), "instagram".into(), "general".into()]),
+            },
+            CliParamDoc {
+                name: "--target-budget-kb".into(),
+                short: None,
+                kind: "NUMBER".into(),
+                default: "(无)".into(),
+                description: "覆盖平台默认体积安全线（KB），触发质量二分搜索压到线内".into(),
+                available_values: None,
+            },
+            CliParamDoc {
+                name: "--quality-ceil".into(),
+                short: None,
+                kind: "NUMBER".into(),
+                default: "95".into(),
+                description: "感知模式质量上限，防止过度堆质量爆体积".into(),
+                available_values: None,
+            },
+            CliParamDoc {
+                name: "--ab".into(),
+                short: None,
+                kind: "FLAG".into(),
+                default: "false".into(),
+                description: "A/B 对照：旧路径(v4.1.0)与新感知路径双输出 + 并排 montage 到 ab_output/".into(),
+                available_values: None,
+            },
+            CliParamDoc {
+                name: "--benchmark".into(),
+                short: None,
+                kind: "FLAG".into(),
+                default: "false".into(),
+                description: "基准对比：输出 体积/SSIM/PSNR/各步耗时 对比表（旧 vs 新）".into(),
+                available_values: None,
+            },
+            CliParamDoc {
                 name: "--self-check".into(),
                 short: None,
                 kind: "FLAG".into(),
                 default: "false".into(),
                 description: "环境自检：内置测试图完整走一遍压缩管线，输出健康报告".into(),
                 available_values: None,
+            },
+            CliParamDoc {
+                name: "--quality-mode".into(),
+                short: None,
+                kind: "STRING".into(),
+                default: "(未指定时跟随 --perceptual 旗标)".into(),
+                description: "画质模式：perceptual=小而美感知压缩(同体积画质更好) / normal=普通标准压缩；显式指定优先于 --perceptual".into(),
+                available_values: Some(vec!["perceptual".into(), "normal".into()]),
+            },
+            CliParamDoc {
+                name: "--usage-mode".into(),
+                short: None,
+                kind: "STRING".into(),
+                default: "(未指定时：有 --platform 视为 social，否则 custom)".into(),
+                description: "用途预设：social(社交分享,平台预设卡体积线)/archive(高清存档,不缩放最高画质)/custom(自定义)".into(),
+                available_values: Some(vec!["social".into(), "archive".into(), "custom".into()]),
             },
         ],
         json_output_envelope: serde_json::json!({
@@ -649,7 +929,7 @@ impl From<CliColorSpace> for ColorSpace {
 
 impl Cli {
     pub fn to_app_config(&self) -> AppConfig {
-        AppConfig {
+        let mut cfg = AppConfig {
             mode: self.mode.into(),
             custom_max_dim: self.max_dim,
             custom_quality: self.quality,
@@ -663,7 +943,56 @@ impl Cli {
             sharpening_amount: self.sharpening_amount,
             use_custom_quantization: self.use_custom_quantization,
             preserve_high_frequency: self.preserve_high_frequency,
+            // 用途推导（三方字段对齐 GUI，向后兼容铁律）：
+            // - 显式 --usage-mode → 直接用
+            // - 未给 usage-mode 但给了 --platform → social（平台预设驱动）
+            // - 都没给 → custom（走 --mode/--max-dim/--quality/--target-kb 旧语义，v4.1.0 完全不变）
+            usage_mode: match self.usage_mode {
+                Some(u) => u.as_str().to_string(),
+                None => {
+                    if self.platform.is_some() {
+                        "social".to_string()
+                    } else {
+                        "custom".to_string()
+                    }
+                }
+            },
+            quality_mode: self
+                .quality_mode
+                .map(|q| q.as_str().to_string())
+                .unwrap_or_else(|| {
+                    if self.perceptual {
+                        "perceptual".to_string()
+                    } else {
+                        "normal".to_string()
+                    }
+                }),
+            platform: self
+                .platform
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_else(|| "wechat".to_string()),
+        };
+        // 平台预设自动填长边/体积/Q 并强制 sRGB（§2）。显式 --target-budget-kb 覆盖预设体积线。
+        // --usage-mode social 但没给 --platform 时按默认 wechat 预设（与 GUI 默认一致）。
+        let effective_platform = match self.platform {
+            Some(p) => Some(p.as_str().to_string()),
+            None if cfg.usage_mode == "social" => Some("wechat".to_string()),
+            None => None,
+        };
+        if let Some(ref p) = effective_platform {
+            if let Some((max_dim, quality, target_kb, srgb)) = platform_preset(p) {
+                cfg.custom_max_dim = max_dim;
+                cfg.custom_quality = quality;
+                cfg.custom_target_kb = target_kb;
+                if srgb {
+                    cfg.color_space = ColorSpace::ConvertToSRGB;
+                }
+            }
         }
+        if let Some(kb) = self.target_budget_kb {
+            cfg.custom_target_kb = kb;
+        }
+        cfg
     }
 }
 
