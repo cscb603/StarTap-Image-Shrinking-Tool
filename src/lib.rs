@@ -578,11 +578,15 @@ impl Processor {
                 perceptual::masked_usm_sharpen(&dynamic_img, &mask, radius, amount, threshold);
             pm.sharpen_ms = t.elapsed().as_millis() as u64;
         } else if self.config.cas_strength > 0.0 && scale < (1.0 / 1.3) {
-            // v4.4.0：CAS 锐化补偿（画质优先档）——仅在明显降采样（缩放比>1.3）时触发，
-            // 补偿 Lanczos 降采样抹掉的高频；逐像素内容自适应，平坦区恒等、无光晕，观感自然。
-            // 感知模式已有显著性 USM 时不会走到这里（上面分支优先），防双重锐化。
+            // v4.4.1：CAS 锐化补偿——不再用固定强度，改为调用自适应计算：
+            // 根据原图内容（人像/风景/复杂度/噪点）+ 原图尺寸 + 缩放幅度综合决策。
+            // 自适应性继承自旧版 smart_adaptive_sharpen，输出映射为 CAS strength。
             let t = std::time::Instant::now();
-            dynamic_img = cas::cas_sharpen(&dynamic_img, self.config.cas_strength);
+            let adaptive_strength =
+                compute_adaptive_cas_strength(&dynamic_img, scale, self.config.cas_strength);
+            if adaptive_strength > 0.0 {
+                dynamic_img = cas::cas_sharpen(&dynamic_img, adaptive_strength);
+            }
             pm.sharpen_ms = t.elapsed().as_millis() as u64;
         } else if self.config.enable_sharpening {
             // v4.1.0 旧路径：智能自适应锐化（行为不变）
@@ -1143,6 +1147,81 @@ fn smart_adaptive_sharpen(image: &image::DynamicImage, max_dim: u32) -> image::D
 
     apply_usm_sharpen(image, radius, amount, threshold)
 }
+
+/// v4.4.1：将旧版 smart_adaptive_sharpen 的决策矩阵映射为 CAS 强度。
+/// 不搞 CAS vs USM 二选一——把"人像/风景/复杂度/原图尺寸/缩放比/噪点"的
+/// 自适应逻辑保留，输出的是 CAS strength 而非 USM (radius, amount, threshold)。
+/// 这样既享受 CAS 的无光晕天然优势，又保留了旧版的内容感知智慧。
+fn compute_adaptive_cas_strength(
+    image: &image::DynamicImage,
+    scale: f32,
+    max_cas: f32,
+) -> f32 {
+    let (width, height) = image.dimensions();
+    let larger_dim = width.max(height);
+
+    // 小图不锐化（与旧版 should_apply_sharpening 一致）
+    if larger_dim < 800 {
+        return 0.0;
+    }
+
+    let skin_ratio = estimate_skin_ratio(image);
+    let complexity = estimate_image_complexity(image);
+    let noise = estimate_noise_level(image);
+    let is_portrait = skin_ratio > 0.3;
+
+    // 高噪点图避免锐化（放大噪点比锐化好处更差）
+    if noise > 0.6 {
+        return 0.0;
+    }
+    // 已经足够锐利的图不再重复锐化
+    if is_already_sharp_enough(image) {
+        return 0.0;
+    }
+    // 低复杂度人像：旧版 should_apply_sharpening 直接跳过（皮肤已平滑，锐化
+    // 反而突兀）。不延续这个门控等于给磨皮人像强行加锐。
+    if is_portrait && complexity <= 0.5 {
+        return 0.0;
+    }
+    // 中等尺寸 + 极低复杂度：内容本身没什么细节可锐，强锐反而出噪点
+    if larger_dim < 2000 && complexity <= 0.3 {
+        return 0.0;
+    }
+
+    // 根据内容类型 + 原图尺寸确定基础强度（沿用旧版 9 档映射换算到 CAS）
+    let base: f32 = if is_portrait {
+        // 人像：保守，防止把皮肤纹理锐出假感
+        if larger_dim < 2000 { 0.08 }
+        else if larger_dim < 4000 { 0.14 }
+        else { 0.22 }
+    } else {
+        // 风景/其他：根据复杂度调节
+        if complexity > 0.5 {
+            if larger_dim < 2000 { 0.18 }
+            else if larger_dim < 4000 { 0.30 }
+            else { 0.44 }
+        } else {
+            if larger_dim < 2000 { 0.12 }
+            else if larger_dim < 4000 { 0.22 }
+            else { 0.34 }
+        }
+    };
+
+    // 缩放幅度因子：降采样越大，越需要锐化补偿
+    let scale_factor = ((1.0 - scale) / 0.9).clamp(0.0, 1.0).powf(0.5);
+
+    // 原图本身很小的额外降低
+    let size_penalty = if larger_dim < 1500 { 0.6 } else { 1.0 };
+
+    // 噪点惩罚（中等噪点适度降低）
+    let noise_penalty = if noise > 0.4 { 0.75 } else { 1.0 };
+
+    let adaptive = (base * scale_factor * size_penalty * noise_penalty).clamp(0.0, 0.5);
+
+    // 不超过调用方指定的上限（用户可通过 --cas-strength 限制最大值）
+    adaptive.min(max_cas)
+}
+
 
 // ============================================================================
 // USM 锐化核心函数
