@@ -1,10 +1,10 @@
-//! GUI 层（人类交互界面）—— 4.1.0 版面骨架 + v4.2.0 三用途卡片
+//! GUI 层（人类交互界面）—— 4.1.0 版面骨架 + v4.4.0 画质优先模式
 //!
 //! 解耦约定：本文件只做 UI 与交互编排，压缩内核全部走 lib.rs
 //! （app_config_to_process_config / Processor），与 CLI/AI-JSON 三方共用同一套语义。
 //! UI 可独立更新，不碰内核；内核升级不破 UI。
 //!
-//! v4.2.0 变化（仅“选择输出模式”区块，其余 4.1.0 原版保留）：
+//! v4.4.0 变化：画质优先模式 + CAS 自然锐化 + 防二压平台甜点 + Q96/4:4:4 全色度保留
 //! - 三用途卡片：社交分享(平台预设) / 高清存档(不缩放最高画质) / 自定义(高级参数)
 //! - 画质模式下拉：小而美(感知压缩) / 普通(标准压缩)
 //! - 拖入即自动处理（4.1.0 已有）+ 优雅停止（当前图处理完才停，已输出图片保留）
@@ -541,7 +541,7 @@ impl eframe::App for ImageCompressorApp {
                     }
                     ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new("星TAP 实验室 | 高性能 Rust 内核 v4.2 · 感知压缩引擎")
+                        egui::RichText::new("星TAP 实验室 | 高性能 Rust 内核 v4.4 · 防二压画质优先")
                             .size(10.0)
                             .color(egui::Color32::from_rgb(148, 163, 184)),
                     );
@@ -628,14 +628,14 @@ impl eframe::App for ImageCompressorApp {
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
                                         ui.label(
-                                            egui::RichText::new("✨ 内核升级 v4.2")
+                                            egui::RichText::new("✨ 画质优先 v4.4")
                                                 .strong()
                                                 .color(egui::Color32::from_rgb(37, 99, 235)),
                                         );
                                         ui.add_space(10.0);
                                         ui.label(
                                             egui::RichText::new(
-                                                "感知压缩 | EXIF 保留 | 大图防爆 | 平台防二压",
+                                                "Q96·4:4:4·CAS自然锐化 | 卡平台甜点防二压 | 色彩饱满",
                                             )
                                             .size(11.0)
                                             .color(egui::Color32::from_rgb(100, 116, 139)),
