@@ -221,5 +221,5 @@ AI 调用前可用 `--capabilities` 获取当前版本支持的完整参数 sche
 ## 下载
 
 - GitHub Release：https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.0
-- 国内蓝奏云 Mac：https://wwbfk.lanzoub.com/ioahw3zqavvc
-- 国内蓝奏云 Win：https://wwbfk.lanzoub.com/iiFUd3zqavof
+- 国内蓝奏云 Mac：https://wwbfk.lanzoub.com/iLfaN3zrwjwj
+- 国内蓝奏云 Win：https://wwbfk.lanzoub.com/iKj4e3zrwjah

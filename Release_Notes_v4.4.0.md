@@ -74,5 +74,6 @@ rust_image_compressor /path/to/photos --quality-first --cas-strength 0.5
 
 ## 下载
 
-- `图片高速压缩_Mac_v4.4.0.zip` — macOS .app
-- `图片高速压缩_Win_v4.4.0.zip` — Windows exe
+- 🍎 Mac：https://wwbfk.lanzoub.com/iLfaN3zrwjwj
+- 🪟 Win：https://wwbfk.lanzoub.com/iKj4e3zrwjah
+- GitHub Release（备用）：https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.0
