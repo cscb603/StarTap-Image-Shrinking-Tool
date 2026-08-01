@@ -6,8 +6,8 @@
 //! 缺失 test_images 时自动跳过，不阻塞编译。
 
 use image::GenericImageView;
-use rust_image_compressor::perceptual::{FocusMode, PerceptualOptions, QuantMode};
-use rust_image_compressor::{app_config_to_process_config, AppConfig, ProcessMode, Processor};
+use xtap_compress::perceptual::{FocusMode, PerceptualOptions, QuantMode};
+use xtap_compress::{app_config_to_process_config, AppConfig, ProcessMode, Processor};
 use std::path::{Path, PathBuf};
 
 fn manifest_dir() -> PathBuf {
@@ -53,13 +53,13 @@ fn ssim_psnr_vs_original(orig: &Path, out: &Path) -> Option<(f64, f64)> {
         image::imageops::FilterType::Triangle,
     );
     let orig_dyn = image::DynamicImage::ImageRgb8(orig_resized);
-    let (ref_gray, _, _) = rust_image_compressor::perceptual::to_gray(&orig_dyn);
-    let (out_gray, gw, gh) = rust_image_compressor::perceptual::to_gray(&out_img);
+    let (ref_gray, _, _) = xtap_compress::perceptual::to_gray(&orig_dyn);
+    let (out_gray, gw, gh) = xtap_compress::perceptual::to_gray(&out_img);
     if gw != ow as usize || gh != oh as usize {
         return None;
     }
-    let ssim = rust_image_compressor::perceptual::ssim_gray(&ref_gray, &out_gray, gw, gh);
-    let psnr = rust_image_compressor::perceptual::psnr_gray(&ref_gray, &out_gray);
+    let ssim = xtap_compress::perceptual::ssim_gray(&ref_gray, &out_gray, gw, gh);
+    let psnr = xtap_compress::perceptual::psnr_gray(&ref_gray, &out_gray);
     Some((ssim, psnr))
 }
 

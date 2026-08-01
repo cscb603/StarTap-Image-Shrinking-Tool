@@ -3402,31 +3402,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust_image_compressor"
-version = "4.4.0"
-dependencies = [
- "anyhow",
- "bytes",
- "clap",
- "crossbeam-channel",
- "dirs",
- "eframe",
- "egui",
- "fast_image_resize",
- "image",
- "img-parts",
- "memmap2",
- "mozjpeg-rs",
- "num_cpus",
- "opener",
- "rayon",
- "rfd",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5027,6 +5002,31 @@ name = "xml-rs"
 version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
+
+[[package]]
+name = "xtap-compress"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "clap",
+ "crossbeam-channel",
+ "dirs",
+ "eframe",
+ "egui",
+ "fast_image_resize",
+ "image",
+ "img-parts",
+ "memmap2",
+ "mozjpeg-rs",
+ "num_cpus",
+ "opener",
+ "rayon",
+ "rfd",
+ "serde",
+ "serde_json",
+ "toml",
+]
 
 [[package]]
 name = "y4m"

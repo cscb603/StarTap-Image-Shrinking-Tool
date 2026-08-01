@@ -1,30 +1,105 @@
 [package]
-name = "rust_image_compressor"
-version = "4.4.0"
+name = "xtap-compress"
+version = "0.1.0"
 edition = "2021"
-authors = ["星 TAP 实验室"]
-description = "图片高速压缩工具 - 星 TAP 实验室出品（摄影级优化）"
+rust-version = "1.75"
+authors = ["星 TAP 实验室 <cscb603@qq.com>"]
+description = "Multi-platform scene-aware image compression engine: chat/social/archive adaptive compression for JPEG/PNG/WebP with perceptual quality and CAS sharpening"
+license = "MIT"
+documentation = "https://docs.rs/xtap-compress"
+repository = "https://github.com/cscb603/xTap-compress"
+homepage = "https://github.com/cscb603/xTap-compress"
+keywords = ["image", "compress", "jpeg", "webp", "perceptual"]
+categories = ["multimedia::images", "multimedia::encoding"]
+
+# 发布内容：排除 bin 侧源码与打包产物（发布纯算法，用户拿不到 GUI/CLI 相关文件）
+exclude = [
+    "src/main.rs",
+    "src/cli.rs",
+    "src/gui.rs",
+    "src/runner.rs",
+    "build.rs",
+    "icon.icns",
+    "icon.ico",
+    "icon.png",
+    "build_mac_app.sh",
+    "Info.plist",
+    "mac_guide*.html",
+    "promo_*.html",
+    "*.zip",
+    "compressed/**",
+    "promo_compressed/**",
+    "图片高速压缩_Mac_v4.4.0/**",
+    "test_images/**",
+    # 原项目杂项：发布包只保留 src/ + examples/ + README + LICENSE
+    "AGENTS.md",
+    "Release_Notes_v4.2.0.md",
+    "Release_Notes_v4.3.0.md",
+    "Release_Notes_v4.3.1.md",
+    "Release_Notes_v4.4.0.md",
+    "使用说明_v4.3.0.md",
+    "使用说明_v4.3.1.md",
+    "使用说明_v4.4.0.md",
+    "mac放权指南_01_为什么会被阻止.png",
+    "mac放权指南_02_步骤1+2.png",
+    "mac放权指南_03_步骤3+4.png",
+    "mac放权指南_04_步骤5+完成.png",
+    "mac放权指南_封面.png",
+    "mac放权指南_配文.md",
+    "mozjpeg-exp-验收总结.md",
+    "v4.2.0_白皮书_感知压缩实验分支.md",
+    "验收报告_v4.2.0-exp.md",
+    "新对话启动指令_复制粘贴.md",
+    "星TAP_v4.4_01_发朋友圈再也不糊了.png",
+    "星TAP_v4.4_02_一流水准内功.png",
+    "星TAP_v4.4_03_AI能开拖多少都不崩.png",
+    "星TAP_v4.4_04_怎么用下载.png",
+    ".workbuddy/**",
+    ".gitignore",
+    "Cargo.lock",
+]
+
+[lib]
+name = "xtap_compress"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rust_image_compressor"
+path = "src/main.rs"
+required-features = ["gui", "cli"]
+
+[features]
+# 发布后默认零 GUI 依赖（用户 cargo add 只拿纯算法引擎）
+# 本机开发 GUI/CLI：cargo run --features "gui,cli"
+default = []
+cli = ["dep:clap", "dep:toml", "dep:serde_json", "dep:dirs", "dep:crossbeam-channel", "dep:num_cpus"]
+gui = ["cli", "dep:eframe", "dep:egui", "dep:rfd", "dep:opener"]
 
 [dependencies]
-eframe = "0.31"
-egui = "0.31"
-image = { version = "0.25", features = ["png", "jpeg", "ico", "webp", "tiff"] }
+# 核心引擎（纯算法必需）
+anyhow = "1.0"
+bytes = "1.7"
 fast_image_resize = "6.0"
+image = { version = "0.25", features = ["png", "jpeg", "ico", "webp", "tiff"] }
+img-parts = "0.4"
+memmap2 = "0.9"
 mozjpeg-rs = "0.9.2"
 rayon = "1.11"
-num_cpus = "1.16"
-anyhow = "1.0"
-crossbeam-channel = "0.5"
-opener = "0.6"
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
-rfd = "0.15"
-img-parts = "0.4"
-bytes = "1.7"
-serde_json = "1.0"
-clap = { version = "4.6", features = ["derive"] }
-memmap2 = "0.9"
-dirs = "5.0"
+
+# CLI（feature cli）
+clap = { version = "4.6", features = ["derive"], optional = true }
+toml = { version = "0.8", optional = true }
+serde_json = { version = "1.0", optional = true }
+dirs = { version = "5.0", optional = true }
+crossbeam-channel = { version = "0.5", optional = true }
+num_cpus = { version = "1.16", optional = true }
+
+# GUI（feature gui，隐含依赖 cli）
+eframe = { version = "0.31", optional = true }
+egui = { version = "0.31", optional = true }
+rfd = { version = "0.15", optional = true }
+opener = { version = "0.6", optional = true }
 
 [profile.release]
 opt-level = 3

@@ -1152,11 +1152,7 @@ fn smart_adaptive_sharpen(image: &image::DynamicImage, max_dim: u32) -> image::D
 /// 不搞 CAS vs USM 二选一——把"人像/风景/复杂度/原图尺寸/缩放比/噪点"的
 /// 自适应逻辑保留，输出的是 CAS strength 而非 USM (radius, amount, threshold)。
 /// 这样既享受 CAS 的无光晕天然优势，又保留了旧版的内容感知智慧。
-fn compute_adaptive_cas_strength(
-    image: &image::DynamicImage,
-    scale: f32,
-    max_cas: f32,
-) -> f32 {
+fn compute_adaptive_cas_strength(image: &image::DynamicImage, scale: f32, max_cas: f32) -> f32 {
     let (width, height) = image.dimensions();
     let larger_dim = width.max(height);
 
@@ -1191,19 +1187,29 @@ fn compute_adaptive_cas_strength(
     // 根据内容类型 + 原图尺寸确定基础强度（沿用旧版 9 档映射换算到 CAS）
     let base: f32 = if is_portrait {
         // 人像：保守，防止把皮肤纹理锐出假感
-        if larger_dim < 2000 { 0.08 }
-        else if larger_dim < 4000 { 0.14 }
-        else { 0.22 }
+        if larger_dim < 2000 {
+            0.08
+        } else if larger_dim < 4000 {
+            0.14
+        } else {
+            0.22
+        }
     } else {
         // 风景/其他：根据复杂度调节
         if complexity > 0.5 {
-            if larger_dim < 2000 { 0.18 }
-            else if larger_dim < 4000 { 0.30 }
-            else { 0.44 }
+            if larger_dim < 2000 {
+                0.18
+            } else if larger_dim < 4000 {
+                0.30
+            } else {
+                0.44
+            }
+        } else if larger_dim < 2000 {
+            0.12
+        } else if larger_dim < 4000 {
+            0.22
         } else {
-            if larger_dim < 2000 { 0.12 }
-            else if larger_dim < 4000 { 0.22 }
-            else { 0.34 }
+            0.34
         }
     };
 
@@ -1221,7 +1227,6 @@ fn compute_adaptive_cas_strength(
     // 不超过调用方指定的上限（用户可通过 --cas-strength 限制最大值）
     adaptive.min(max_cas)
 }
-
 
 // ============================================================================
 // USM 锐化核心函数
@@ -1529,4 +1534,182 @@ fn flatten_rgba8_to_rgb(img: image::RgbaImage) -> Vec<u8> {
         out.push((b as f32 * alpha + 255.0 * inv) as u8);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("xtap_compress_test_{}_{}", tag, std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// 生成一张纯色渐变测试图（避免依赖外部图片）
+    fn make_test_image(path: &Path, w: u32, h: u32) {
+        let mut img = image::RgbaImage::new(w, h);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            let r = (x as f32 / w as f32 * 255.0) as u8;
+            let g = (y as f32 / h as f32 * 255.0) as u8;
+            let b = ((x + y) as f32 / (w + h) as f32 * 255.0) as u8;
+            *px = image::Rgba([r, g, b, 255]);
+        }
+        img.save(path).unwrap();
+    }
+
+    #[test]
+    fn test_app_config_social_maps_to_wechat() {
+        // social（聊天场景）→ ProcessMode::WeChat + 平台预设写入 custom_*
+        let cfg = AppConfig {
+            usage_mode: "social".to_string(),
+            custom_max_dim: 1280,
+            custom_quality: 90,
+            custom_target_kb: 300,
+            ..Default::default()
+        };
+
+        let pc = app_config_to_process_config(&cfg, None);
+        assert_eq!(pc.mode, ProcessMode::WeChat);
+        assert_eq!(pc.max_dim, 1280);
+        assert_eq!(pc.quality, 90);
+        assert_eq!(pc.target_kb, 300);
+        assert_eq!(pc.subsampling, "420");
+        // 默认输出后缀与模式对应
+        let p = Processor::new(pc);
+        let out = p.expected_output_path(Path::new("photo.jpg"));
+        assert!(out.to_string_lossy().ends_with("_wx.jpg"));
+    }
+
+    #[test]
+    fn test_app_config_archive_no_downscale() {
+        // archive（高清存档）→ 不缩放(0) + 视觉无损(95) + 不限体积(0)
+        let cfg = AppConfig {
+            usage_mode: "archive".to_string(),
+            ..Default::default()
+        };
+
+        let pc = app_config_to_process_config(&cfg, None);
+        assert_eq!(pc.mode, ProcessMode::HD);
+        assert_eq!(pc.max_dim, 0, "archive 不应缩放");
+        assert_eq!(pc.quality, 95);
+        assert_eq!(pc.target_kb, 0);
+        // 默认输出格式 Jpeg → 任意输入最终 .jpg；archive 后缀 _hd
+        let out = Processor::new(pc).expected_output_path(Path::new("photo.png"));
+        assert!(out.to_string_lossy().ends_with("_hd.jpg"));
+    }
+
+    #[test]
+    fn test_process_image_compresses_and_scales() {
+        // 端到端：生成 1600x1200 图 → 1280 上限压缩 → 输出存在、尺寸符合、体积下降
+        let dir = tmp_dir("e2e");
+        let src = dir.join("src.png");
+        make_test_image(&src, 1600, 1200);
+
+        let cfg = AppConfig::default();
+        let mut pc = app_config_to_process_config(&cfg, Some(dir.join("out")));
+        pc.max_dim = 1280;
+        pc.quality = 80;
+        pc.overwrite = false;
+        pc.keep_original_name = true;
+
+        let processor = Processor::new(pc);
+        let out = processor.process_image(&src).unwrap();
+        assert!(out.exists(), "输出文件应存在");
+
+        let img = image::open(&out).unwrap();
+        assert!(
+            img.width() <= 1280 && img.height() <= 1280,
+            "应缩放至 1280 内，实际 {}x{}",
+            img.width(),
+            img.height()
+        );
+        assert!(
+            fs::metadata(&out).unwrap().len() < fs::metadata(&src).unwrap().len(),
+            "压缩后体积应小于原图"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_expected_output_path_suffix_rules() {
+        // 后缀规则：WeChat→_wx / HD→_hd / Custom→_da；overwrite 时保持原名
+        let base = ProcessConfig {
+            mode: ProcessMode::Custom,
+            max_dim: 2000,
+            quality: 85,
+            target_kb: 0,
+            output_dir: None,
+            overwrite: false,
+            keep_original_name: false,
+            output_format: OutputFormat::Jpeg,
+            color_space: ColorSpace::KeepOriginal,
+            enable_sharpening: false,
+            sharpening_radius: 1.0,
+            sharpening_amount: 0.8,
+            perceptual: None,
+            subsampling: "420".to_string(),
+            preserve_structure: false,
+            structure_base: None,
+            output_suffix: None,
+            cas_strength: 0.0,
+        };
+
+        let wx = Processor::new(ProcessConfig {
+            mode: ProcessMode::WeChat,
+            ..base.clone()
+        })
+        .expected_output_path(Path::new("a.JPG"));
+        assert!(
+            wx.to_string_lossy().ends_with("_wx.jpg"),
+            "大小写扩展名应归一 + 后缀 _wx，实际 {}",
+            wx.display()
+        );
+
+        let hd = Processor::new(ProcessConfig {
+            mode: ProcessMode::HD,
+            ..base.clone()
+        })
+        .expected_output_path(Path::new("a.png"));
+        // 默认输出格式 Jpeg → 输出扩展名 .jpg（与输出格式一致，非输入格式）
+        assert!(hd.to_string_lossy().ends_with("_hd.jpg"));
+
+        let da = Processor::new(ProcessConfig {
+            mode: ProcessMode::Custom,
+            ..base.clone()
+        })
+        .expected_output_path(Path::new("a.webp"));
+        assert!(
+            da.to_string_lossy().ends_with("_da.jpg"),
+            "Custom 默认后缀 _da，实际 {}",
+            da.display()
+        );
+
+        let ow = Processor::new(ProcessConfig {
+            overwrite: true,
+            ..base
+        })
+        .expected_output_path(Path::new("b.jpg"));
+        assert!(ow.to_string_lossy().ends_with("b.jpg"));
+    }
+
+    #[test]
+    fn test_path_self_healing_case_insensitive() {
+        let dir = tmp_dir("heal");
+        let real = dir.join("Photo.PNG");
+        make_test_image(&real, 64, 64);
+        // 输入大小写不一致：大小写敏感 FS（Linux/Win）走兜底，macOS（APFS 不敏感）首分支已命中
+        let healed = path_self_healing(&dir.join("photo.png"));
+        // 两种平台行为都应指向真实存在的同一文件
+        assert!(healed.exists(), "healed 路径必须存在: {}", healed.display());
+        assert_eq!(
+            fs::canonicalize(&healed).unwrap(),
+            fs::canonicalize(&real).unwrap(),
+            "healed 与真实文件应为同一文件"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
 }

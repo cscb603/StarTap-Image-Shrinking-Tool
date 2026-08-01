@@ -2,14 +2,14 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use rust_image_compressor::{AppConfig, ColorSpace, OutputFormat, ProcessMode};
+use xtap_compress::{AppConfig, ColorSpace, OutputFormat, ProcessMode};
 
 // ============================================================================
 // CLI 参数定义
 // ============================================================================
 
 #[derive(Parser, Debug)]
-#[command(name = "rust_image_compressor")]
+#[command(name = "xtap_compress")]
 #[command(about = "图片高速压缩工具 - 高性能 Rust 处理内核")]
 #[command(long_about = "图片高速压缩工具 - 高性能 Rust 处理内核\n\n\
 用法示例:\n\
@@ -238,7 +238,7 @@ pub enum CliFocusMode {
     Center,
 }
 
-impl From<CliFocusMode> for rust_image_compressor::perceptual::FocusMode {
+impl From<CliFocusMode> for xtap_compress::perceptual::FocusMode {
     fn from(m: CliFocusMode) -> Self {
         match m {
             CliFocusMode::Auto => Self::Auto,
@@ -254,7 +254,7 @@ pub enum CliQuantMode {
     Csf,
 }
 
-impl From<CliQuantMode> for rust_image_compressor::perceptual::QuantMode {
+impl From<CliQuantMode> for xtap_compress::perceptual::QuantMode {
     fn from(m: CliQuantMode) -> Self {
         match m {
             CliQuantMode::Standard => Self::Standard,
@@ -367,7 +367,7 @@ pub fn platform_preset_max(platform: &str) -> Option<(u32, u8, u32, bool)> {
 /// 三调用点（GUI start_processing / CLI to_app_config / JSON run_json_mode）共用，
 /// 防止三处参数表漂移。quality_mode=="max" 时额外强制 4:4:4 + CAS 锐化补偿 0.35
 /// （调用方可在本函数返回后用显式参数覆盖）。
-pub fn apply_platform_preset(cfg: &mut rust_image_compressor::AppConfig, platform: &str) {
+pub fn apply_platform_preset(cfg: &mut xtap_compress::AppConfig, platform: &str) {
     let is_max = cfg.quality_mode == "max";
     let preset = if is_max {
         platform_preset_max(platform)

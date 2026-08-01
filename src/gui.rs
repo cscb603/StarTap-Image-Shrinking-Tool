@@ -25,8 +25,8 @@ use std::sync::Arc;
 
 use crate::cli::apply_platform_preset;
 use crate::runner::{collect_images, is_large_image, is_supported_image, load_config, save_config};
-use rust_image_compressor::perceptual::{FocusMode, PerceptualOptions, QuantMode};
-use rust_image_compressor::{
+use xtap_compress::perceptual::{FocusMode, PerceptualOptions, QuantMode};
+use xtap_compress::{
     app_config_to_process_config, AppConfig, OutputFormat, ProcessMode, Processor,
 };
 
@@ -1345,7 +1345,7 @@ pub(crate) fn run_gui() -> Result<()> {
     };
 
     eframe::run_native(
-        "rust_image_compressor",
+        "xtap_compress",
         options,
         Box::new(|cc| Ok(Box::new(ImageCompressorApp::new(cc)))),
     )

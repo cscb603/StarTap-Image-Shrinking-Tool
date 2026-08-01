@@ -16,10 +16,10 @@ use crate::cli::{
     apply_platform_preset, build_envelope, Cli, CliQualityMode, FileResult, JsonInput,
     PerceptualMetricsOut, StepTimings,
 };
-use rust_image_compressor::perceptual::{
+use xtap_compress::perceptual::{
     FocusMode, PerceptualMetrics, PerceptualOptions, QuantMode,
 };
-use rust_image_compressor::{
+use xtap_compress::{
     app_config_to_process_config, AppConfig, ColorSpace, OutputFormat, ProcessMode, Processor,
 };
 
@@ -29,7 +29,7 @@ use rust_image_compressor::{
 
 pub(crate) fn get_config_file_path() -> Result<PathBuf> {
     if let Some(mut path) = dirs::config_dir() {
-        path.push("rust_image_compressor");
+        path.push("xtap_compress");
         fs::create_dir_all(&path)?;
         path.push("config.toml");
         Ok(path)
@@ -882,13 +882,13 @@ fn ssim_psnr_vs_source(orig: &Path, out: &Path) -> Option<(f64, f64)> {
         image::imageops::FilterType::Triangle,
     );
     let orig_dyn = image::DynamicImage::ImageRgb8(orig_resized);
-    let (ref_gray, _, _) = rust_image_compressor::perceptual::to_gray(&orig_dyn);
-    let (out_gray, gw, gh) = rust_image_compressor::perceptual::to_gray(&out_img);
+    let (ref_gray, _, _) = xtap_compress::perceptual::to_gray(&orig_dyn);
+    let (out_gray, gw, gh) = xtap_compress::perceptual::to_gray(&out_img);
     if gw != ow as usize || gh != oh as usize {
         return None;
     }
-    let ssim = rust_image_compressor::perceptual::ssim_gray(&ref_gray, &out_gray, gw, gh);
-    let psnr = rust_image_compressor::perceptual::psnr_gray(&ref_gray, &out_gray);
+    let ssim = xtap_compress::perceptual::ssim_gray(&ref_gray, &out_gray, gw, gh);
+    let psnr = xtap_compress::perceptual::psnr_gray(&ref_gray, &out_gray);
     Some((ssim, psnr))
 }
 
@@ -945,7 +945,7 @@ pub(crate) fn run_self_check() -> Result<()> {
     let width = 1024u32;
     let height = 768u32;
     let img = generate_test_image(width, height);
-    let tmp = std::env::temp_dir().join("rust_image_compressor_selfcheck");
+    let tmp = std::env::temp_dir().join("xtap_compress_selfcheck");
     fs::create_dir_all(&tmp)?;
     let input_path = tmp.join("selfcheck_source.png");
     image::DynamicImage::ImageRgb8(img)
