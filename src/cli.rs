@@ -9,7 +9,7 @@ use xtap_compress::{AppConfig, ColorSpace, OutputFormat, ProcessMode};
 // ============================================================================
 
 #[derive(Parser, Debug)]
-#[command(name = "xtap_compress")]
+#[command(name = "rust_image_compressor")]
 #[command(about = "图片高速压缩工具 - 高性能 Rust 处理内核")]
 #[command(long_about = "图片高速压缩工具 - 高性能 Rust 处理内核\n\n\
 用法示例:\n\
