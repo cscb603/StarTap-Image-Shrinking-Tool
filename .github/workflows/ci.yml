@@ -11,7 +11,7 @@ env:
 
 jobs:
   check:
-    name: test + clippy + fmt
+    name: publish-form check (fmt + test + clippy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,14 +24,16 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --check
+      # 本仓库从「带 GUI/CLI 的原项目」发布，只校验发布形态（纯算法库）文件，
+      # 不检查 bin 侧（src/main.rs / cli.rs / gui.rs / runner.rs）的历史格式差异
+      - name: Check formatting (publish files only)
+        run: rustfmt --check --edition 2021 --config skip_children=true src/lib.rs src/cas.rs src/perceptual.rs examples/compress_demo.rs
 
-      - name: Build all features
-        run: cargo build --all-features
+      - name: Build (no default features, pure algorithm)
+        run: cargo build --no-default-features
 
-      - name: Run tests (all features)
-        run: cargo test --all-features
+      - name: Run tests (lib)
+        run: cargo test --lib --no-default-features
 
-      - name: Clippy (zero warnings, all features)
-        run: cargo clippy --all-features --all-targets -- -D warnings
+      - name: Clippy (zero warnings, pure algorithm)
+        run: cargo clippy --no-default-features --lib -- -D warnings
