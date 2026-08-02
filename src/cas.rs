@@ -30,40 +30,42 @@ pub fn cas_sharpen(img: &DynamicImage, strength: f32) -> DynamicImage {
     let stride = (w as usize) * 4;
     let mut out = vec![0u8; src.len()];
 
-    out.par_chunks_mut(stride).enumerate().for_each(|(yi, row)| {
-        let y = yi as u32;
-        let ym = y.saturating_sub(1);
-        let yp = (y + 1).min(h - 1);
-        for x in 0..w {
-            let xm = x.saturating_sub(1);
-            let xp = (x + 1).min(w - 1);
-            let base = (x as usize) * 4;
-            let px = |xx: u32, yy: u32, c: usize| -> f32 {
-                src[(yy as usize) * stride + (xx as usize) * 4 + c] as f32 * (1.0 / 255.0)
-            };
-            for c in 0..3 {
-                let m = px(x, y, c);
-                let n = px(x, ym, c);
-                let s = px(x, yp, c);
-                let e = px(xp, y, c);
-                let wv = px(xm, y, c);
-                let mn = m.min(n).min(s).min(e).min(wv);
-                let mx = m.max(n).max(s).max(e).max(wv);
-                // 自适应量：局部对比度高 → d 小 → 少锐化（防已锐边过冲）；
-                // 近白（2-mx 小）同样收敛，防高光裁剪。
-                let d = if mx > 1e-6 {
-                    (mn.min(2.0 - mx) / mx).clamp(0.0, 1.0)
-                } else {
-                    0.0
+    out.par_chunks_mut(stride)
+        .enumerate()
+        .for_each(|(yi, row)| {
+            let y = yi as u32;
+            let ym = y.saturating_sub(1);
+            let yp = (y + 1).min(h - 1);
+            for x in 0..w {
+                let xm = x.saturating_sub(1);
+                let xp = (x + 1).min(w - 1);
+                let base = (x as usize) * 4;
+                let px = |xx: u32, yy: u32, c: usize| -> f32 {
+                    src[(yy as usize) * stride + (xx as usize) * 4 + c] as f32 * (1.0 / 255.0)
                 };
-                let wgt = d.sqrt() * peak;
-                let v = ((n + s + e + wv) * wgt + m) / (4.0 * wgt + 1.0);
-                row[base + c] = (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                for c in 0..3 {
+                    let m = px(x, y, c);
+                    let n = px(x, ym, c);
+                    let s = px(x, yp, c);
+                    let e = px(xp, y, c);
+                    let wv = px(xm, y, c);
+                    let mn = m.min(n).min(s).min(e).min(wv);
+                    let mx = m.max(n).max(s).max(e).max(wv);
+                    // 自适应量：局部对比度高 → d 小 → 少锐化（防已锐边过冲）；
+                    // 近白（2-mx 小）同样收敛，防高光裁剪。
+                    let d = if mx > 1e-6 {
+                        (mn.min(2.0 - mx) / mx).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let wgt = d.sqrt() * peak;
+                    let v = ((n + s + e + wv) * wgt + m) / (4.0 * wgt + 1.0);
+                    row[base + c] = (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                }
+                // alpha 透传
+                row[base + 3] = src[(y as usize) * stride + base + 3];
             }
-            // alpha 透传
-            row[base + 3] = src[(y as usize) * stride + base + 3];
-        }
-    });
+        });
 
     DynamicImage::ImageRgba8(
         image::ImageBuffer::from_raw(w, h, out).expect("CAS 输出缓冲尺寸恒等于输入"),
@@ -78,11 +80,8 @@ mod tests {
     /// 平坦图（纯色）经 CAS 后必须逐字节不变（内容自适应：平坦区零锐化）
     #[test]
     fn flat_image_unchanged() {
-        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
-            16,
-            16,
-            Rgba([120, 130, 140, 255]),
-        ));
+        let img =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(16, 16, Rgba([120, 130, 140, 255])));
         let out = cas_sharpen(&img, 0.35);
         assert_eq!(img.to_rgba8().as_raw(), out.to_rgba8().as_raw());
     }
@@ -104,8 +103,14 @@ mod tests {
         let dark_out = out.get_pixel(7, 8)[0] as i32;
         let lite_src = src.get_pixel(8, 8)[0] as i32;
         let lite_out = out.get_pixel(8, 8)[0] as i32;
-        assert!(dark_out <= dark_src, "暗侧不应变亮: {dark_src} -> {dark_out}");
-        assert!(lite_out >= lite_src, "亮侧不应变暗: {lite_src} -> {lite_out}");
+        assert!(
+            dark_out <= dark_src,
+            "暗侧不应变亮: {dark_src} -> {dark_out}"
+        );
+        assert!(
+            lite_out >= lite_src,
+            "亮侧不应变暗: {lite_src} -> {lite_out}"
+        );
         assert!(
             (lite_out - dark_out) > (lite_src - dark_src),
             "边缘对比度应提升"
@@ -117,11 +122,7 @@ mod tests {
     /// strength=0 原样返回
     #[test]
     fn zero_strength_noop() {
-        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
-            8,
-            8,
-            Rgba([10, 200, 90, 128]),
-        ));
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([10, 200, 90, 128])));
         let out = cas_sharpen(&img, 0.0);
         assert_eq!(img.to_rgba8().as_raw(), out.to_rgba8().as_raw());
     }
