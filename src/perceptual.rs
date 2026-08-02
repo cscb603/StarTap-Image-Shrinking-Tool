@@ -521,7 +521,7 @@ const STD_CHROMA_BASE: [u16; 64] = [
 /// 生成按 quality 缩放后的 CSF 感知量化表 (luma, chroma)
 ///
 /// 实现方式：先按 libjpeg 公式生成同 quality 的标准表，再用「均值归一化」的 CSF 敏感度逐系数调制
-/// （csf[i] = 标准表[i] / (sens[i]/mean_sens)）。平均调制比≈1 → 总码率与标准表持平；
+/// （`csf[i]` = 标准表 `[i]` / (sens`[i]`/mean_sens)）。平均调制比≈1 → 总码率与标准表持平；
 /// 人眼更敏感的频带被加细（码率↑），更不敏感的频带被加粗（码率↓）→ 感知画质↑、体积不涨。
 pub fn csf_quant_tables(quality: u8) -> ([u16; 64], [u16; 64]) {
     // Mannos-Sakrison CSF（原始形式，未归一化）
