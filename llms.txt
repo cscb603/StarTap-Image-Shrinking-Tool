@@ -1,0 +1,21 @@
+# StarTap Image Shrinking Tool (星TAP 图片高速压缩)
+
+> A Rust + Tauri desktop image compressor that shrinks photos 50–80% while resisting WeChat / Xiaohongshu recompression — so "small file size" and "high clarity" finally coexist. Built for sharing to chat apps without quality loss.
+
+StarTap Image Shrinking Tool (core crate: xtap-compress) is a portable, zero-install Windows/macOS app. It targets the real pain of Chinese social platforms: WeChat and 朋友圈 aggressively re-encode uploaded images, destroying detail. The tool uses mozjpeg, Contrast Adaptive Sharpening (CAS), perceptual quantization and 4:4:4 chroma sampling to produce files that survive platform recompression with minimal visible loss.
+
+It ships two modes from one Rust engine: a GUI for humans and a CLI with a JSON envelope for AI agents (Agent-First). The CLI accepts JSON-in and emits JSON / JSONL, making it directly callable by LLM agents.
+
+## Documentation
+- [README](https://github.com/cscb603/StarTap-Image-Shrinking-Tool): Bilingual intro, features, install, CLI/JSON usage
+- [Releases](https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases): Portable Windows/macOS builds
+
+## Key capabilities
+- [WeChat / Xiaohongshu anti-recompression](https://github.com/cscb603/StarTap-Image-Shrinking-Tool): Quality-first preset keeps detail after platform re-encode
+- [mozjpeg + 4:4:4 chroma](https://github.com/cscb603/StarTap-Image-Shrinking-Tool): Perceptually tuned JPEG, not blind downscale
+- [CAS sharpening](https://github.com/cscb603/StarTap-Image-Shrinking-Tool): Restores crispness lost to compression
+- [Agent-First CLI (JSON)](https://github.com/cscb603/StarTap-Image-Shrinking-Tool): idempotent JSON-in/JSON-out for LLM agents
+- [Crate: xtap-compress](https://github.com/cscb603/xTap-compress): reusable Rust compression library
+
+## Topics
+Rust, Tauri, image compression, mozjpeg, WeChat image compression, anti-recompression, 4:4:4 chroma, CAS, CLI for AI, Agent-First
