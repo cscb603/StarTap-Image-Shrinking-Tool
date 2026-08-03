@@ -38,6 +38,6 @@ v4.4.0 把画质拉满了。v4.4.1 回到交互细节：**GUI 里设置的自定
 
 ## 下载
 
-- 🍎 Mac：待上传
-- 🪟 Win：待上传
+- 🍎 Mac：https://wwbfk.lanzoub.com/iHRY140aa6bc
+- 🪟 Win：https://wwbfk.lanzoub.com/iaXld40aa2li
 - GitHub Release（备用）：https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.1
