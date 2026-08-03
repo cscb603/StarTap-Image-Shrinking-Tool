@@ -16,9 +16,7 @@ use crate::cli::{
     apply_platform_preset, build_envelope, Cli, CliQualityMode, FileResult, JsonInput,
     PerceptualMetricsOut, StepTimings,
 };
-use xtap_compress::perceptual::{
-    FocusMode, PerceptualMetrics, PerceptualOptions, QuantMode,
-};
+use xtap_compress::perceptual::{FocusMode, PerceptualMetrics, PerceptualOptions, QuantMode};
 use xtap_compress::{
     app_config_to_process_config, AppConfig, ColorSpace, OutputFormat, ProcessMode, Processor,
 };
@@ -57,7 +55,10 @@ pub(crate) fn load_config() -> Result<AppConfig> {
     config.config_version = 2;
     if did_migrate {
         if let Err(e) = save_config(&config) {
-            eprintln!("[WARN] 配置迁移保存失败（不影响使用，重开仍会尝试迁移）: {}", e);
+            eprintln!(
+                "[WARN] 配置迁移保存失败（不影响使用，重开仍会尝试迁移）: {}",
+                e
+            );
         }
     }
     Ok(config)
@@ -615,7 +616,11 @@ fn is_system_hidden(path: &Path) -> bool {
 
 /// v4.3.1：把处理失败原因分类为结构化 error_type，便于 agent 决策重试还是跳过。
 fn classify_error(msg: &str) -> String {
-    if msg.contains("权限") || msg.contains("permission") || msg.contains("Permission") || msg.contains("Access") {
+    if msg.contains("权限")
+        || msg.contains("permission")
+        || msg.contains("Permission")
+        || msg.contains("Access")
+    {
         "permission".to_string()
     } else if msg.contains("decode")
         || msg.contains("load")
@@ -636,10 +641,8 @@ fn common_ancestor(paths: &[PathBuf]) -> Option<PathBuf> {
     if paths.is_empty() {
         return None;
     }
-    let comps: Vec<Vec<std::path::Component>> = paths
-        .iter()
-        .map(|p| p.components().collect())
-        .collect();
+    let comps: Vec<Vec<std::path::Component>> =
+        paths.iter().map(|p| p.components().collect()).collect();
     let min_len = comps.iter().map(|c| c.len()).min().unwrap_or(0);
     let mut prefix: Vec<std::path::Component> = Vec::new();
     for i in 0..min_len {

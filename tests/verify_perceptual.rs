@@ -6,9 +6,9 @@
 //! 缺失 test_images 时自动跳过，不阻塞编译。
 
 use image::GenericImageView;
+use std::path::{Path, PathBuf};
 use xtap_compress::perceptual::{FocusMode, PerceptualOptions, QuantMode};
 use xtap_compress::{app_config_to_process_config, AppConfig, ProcessMode, Processor};
-use std::path::{Path, PathBuf};
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
