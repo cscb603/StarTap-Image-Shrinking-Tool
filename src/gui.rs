@@ -27,7 +27,7 @@ use crate::cli::apply_platform_preset;
 use crate::runner::{collect_images, is_large_image, is_supported_image, load_config, save_config};
 use xtap_compress::perceptual::{FocusMode, PerceptualOptions, QuantMode};
 use xtap_compress::{
-    app_config_to_process_config, AppConfig, OutputFormat, ProcessMode, Processor,
+    app_config_to_process_config, AppConfig, OutputFormat, ProcessMode, Processor, APP_VERSION,
 };
 
 #[allow(dead_code)]
@@ -156,7 +156,7 @@ impl ImageCompressorApp {
             success_count: 0,
             show_about: false,
             show_advanced: false,
-            about_version: "v4.4.1".to_string(),
+            about_version: APP_VERSION.to_string(),
             stop_flag: Arc::new(AtomicBool::new(false)),
             stop_requested: false,
             stopped: false,
@@ -244,67 +244,80 @@ impl ImageCompressorApp {
         let platform_for_perceptual = config.platform.clone();
 
         let _ = std::thread::spawn(move || {
-            let mut processor_config = app_config_to_process_config(&config, custom_output_dir);
-            processor_config.perceptual = if perceptual_on {
-                Some(PerceptualOptions {
-                    denoise_strength: 25,
-                    focus_mode: FocusMode::Auto,
-                    quant_mode: QuantMode::Csf,
-                    quality_ceil: 100,
-                    budget_kb: None,
-                    platform: Some(platform_for_perceptual),
-                })
-            } else {
-                None
-            };
-            let processor = Processor::new(processor_config);
             let total = files.len();
             let success_count = AtomicUsize::new(0);
 
-            // 分桶调度：大图（TIFF / 超大文件 / 超高像素）串行，小图并行。
-            // 目的：多张超大 TIFF 若并行解码会瞬间吃满内存触发 OOM；
-            //       串行把内存峰值锁死在「单张」，处理完释放再下一张，绝不叠加。
-            let mut big: Vec<(usize, PathBuf)> = Vec::new();
-            let mut small: Vec<(usize, PathBuf)> = Vec::new();
-            for (index, item) in files.iter().enumerate() {
-                if is_large_image(&item.path) {
-                    big.push((index, item.path.clone()));
+            // P0：输出目录自愈——自定义输出目录不存在时先建再写，避免整批因目录缺失失败
+            if let Some(d) = custom_output_dir.as_ref() {
+                if let Err(e) = std::fs::create_dir_all(d) {
+                    eprintln!("[WARN] 无法创建输出目录 {:?}: {}", d, e);
+                }
+            }
+
+            // P0：panic 兜底——工作线程若崩溃，仍保证发送 ProcessingFinished，UI 不卡「处理中」
+            let panic_err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut processor_config = app_config_to_process_config(&config, custom_output_dir);
+                processor_config.perceptual = if perceptual_on {
+                    Some(PerceptualOptions {
+                        denoise_strength: 25,
+                        focus_mode: FocusMode::Auto,
+                        quant_mode: QuantMode::Csf,
+                        quality_ceil: 100,
+                        budget_kb: None,
+                        platform: Some(platform_for_perceptual),
+                    })
                 } else {
-                    small.push((index, item.path.clone()));
+                    None
+                };
+                let processor = Processor::new(processor_config);
+
+                // 分桶调度：大图（TIFF / 超大文件 / 超高像素）串行，小图并行。
+                // 目的：多张超大 TIFF 若并行解码会瞬间吃满内存触发 OOM；
+                //       串行把内存峰值锁死在「单张」，处理完释放再下一张，绝不叠加。
+                let mut big: Vec<(usize, PathBuf)> = Vec::new();
+                let mut small: Vec<(usize, PathBuf)> = Vec::new();
+                for (index, item) in files.iter().enumerate() {
+                    if is_large_image(&item.path) {
+                        big.push((index, item.path.clone()));
+                    } else {
+                        small.push((index, item.path.clone()));
+                    }
                 }
+
+                // 小图并行（rayon 全局池，GUI 已封顶 4 线程，内存可控）
+                // 优雅停止：已置位则跳过未开始的图；正在处理的图完整跑完（原子写不破坏输出）
+                small.par_iter().for_each(|(index, path)| {
+                    if stop_flag.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let is_success = processor.process_image(path).is_ok();
+                    if is_success {
+                        success_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let _ = tx.send(AppEvent::ProcessingProgress(
+                        *index,
+                        if is_success { 1 } else { 0 },
+                    ));
+                });
+
+                // 大图串行（一次一张，内存峰值 = 单张，绝不叠加）
+                for (index, path) in &big {
+                    if stop_flag.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let is_success = processor.process_image(path).is_ok();
+                    if is_success {
+                        success_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let _ = tx.send(AppEvent::ProcessingProgress(
+                        *index,
+                        if is_success { 1 } else { 0 },
+                    ));
+                }
+            }));
+            if let Err(e) = panic_err {
+                eprintln!("[ERROR] 工作线程 panic: {:?}", e);
             }
-
-            // 小图并行（rayon 全局池，GUI 已封顶 4 线程，内存可控）
-            // 优雅停止：已置位则跳过未开始的图；正在处理的图完整跑完（原子写不破坏输出）
-            small.par_iter().for_each(|(index, path)| {
-                if stop_flag.load(Ordering::SeqCst) {
-                    return;
-                }
-                let is_success = processor.process_image(path).is_ok();
-                if is_success {
-                    success_count.fetch_add(1, Ordering::Relaxed);
-                }
-                let _ = tx.send(AppEvent::ProcessingProgress(
-                    *index,
-                    if is_success { 1 } else { 0 },
-                ));
-            });
-
-            // 大图串行（一次一张，内存峰值 = 单张，绝不叠加）
-            for (index, path) in &big {
-                if stop_flag.load(Ordering::SeqCst) {
-                    break;
-                }
-                let is_success = processor.process_image(path).is_ok();
-                if is_success {
-                    success_count.fetch_add(1, Ordering::Relaxed);
-                }
-                let _ = tx.send(AppEvent::ProcessingProgress(
-                    *index,
-                    if is_success { 1 } else { 0 },
-                ));
-            }
-
             let _ = tx.send(AppEvent::ProcessingFinished(
                 total,
                 success_count.load(Ordering::Relaxed),
@@ -539,9 +552,12 @@ impl eframe::App for ImageCompressorApp {
                     }
                     ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new("星TAP 实验室 | 高性能 Rust 内核 v4.4.1 · 防二压画质优先")
-                            .size(10.0)
-                            .color(egui::Color32::from_rgb(148, 163, 184)),
+                        egui::RichText::new(format!(
+                            "星TAP 实验室 | 高性能 Rust 内核 {} · 防二压画质优先",
+                            APP_VERSION
+                        ))
+                        .size(10.0)
+                        .color(egui::Color32::from_rgb(148, 163, 184)),
                     );
                     ui.label(
                         egui::RichText::new(
@@ -626,7 +642,7 @@ impl eframe::App for ImageCompressorApp {
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
                                         ui.label(
-                        egui::RichText::new("✨ 画质优先 v4.4.1")
+                        egui::RichText::new(format!("✨ 画质优先 {}", APP_VERSION))
                             .strong()
                             .color(egui::Color32::from_rgb(37, 99, 235)),
                                         );
@@ -707,6 +723,8 @@ impl eframe::App for ImageCompressorApp {
                                         .clicked()
                                         {
                                             self.config.usage_mode = "custom".to_string();
+                                            // P1a：切到自定义时归一化画质模式，消除从社交平台残留 "max" 导致的下拉显示错乱
+                                            self.config.quality_mode = "normal".to_string();
                                             self.show_advanced = true;
                                         }
                                     });
@@ -901,8 +919,7 @@ impl eframe::App for ImageCompressorApp {
                                             let display_path = self
                                                 .config
                                                 .custom_output_dir
-                                                .as_ref()
-                                                .map(|s| s.as_str())
+                                                .as_deref()
                                                 .unwrap_or("默认 (原文件旁)");
                                             ui.label(
                                                 egui::RichText::new(display_path)
