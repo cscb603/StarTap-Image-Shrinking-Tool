@@ -70,5 +70,6 @@ v4.4.2 把健壮性做扎实了。v4.4.3 回到**体验细节 + 一个真 bug �
 
 ## 下载
 
-- 🍎 Mac / 🪟 Win：GitHub Release（v4.4.3）：https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.3
-- 国内蓝奏云镜像：上传后补充（暂以 GitHub Release 为准）
+- 🍎 Mac：https://wwbfk.lanzoub.com/ifCJB40c6e7e
+- 🪟 Win：https://wwbfk.lanzoub.com/ia0Nm40c6e9g
+- GitHub Release（备用）：https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.3

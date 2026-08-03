@@ -6,7 +6,7 @@
 //!
 //! v4.4.0 变化：画质优先模式 + CAS 自然锐化 + 防二压平台甜点 + Q96/4:4:4 全色度保留
 //! - 三用途卡片：社交分享(平台预设) / 高清存档(不缩放最高画质) / 自定义(高级参数)
-//! - 画质模式下拉：小而美(感知压缩) / 普通(标准压缩)
+//! - 画质模式下拉：画质优先(最高画质) / 小而美(感知压缩) / 普通(标准压缩)
 //! - 拖入即自动处理（4.1.0 已有）+ 优雅停止（当前图处理完才停，已输出图片保留）
 //! - 处理中参数区自动折叠、拖放区收小
 //! - 完成时持久化配置（用途/平台/画质记忆）
@@ -319,6 +319,13 @@ impl ImageCompressorApp {
             }
             _ => {
                 // 自定义：走高级面板的 custom_* 参数
+                if config.quality_mode == "max" {
+                    // 画质优先：在自定义参数基础上强制最高画质基线
+                    config.custom_quality = config.custom_quality.max(96);
+                    config.subsampling = "444".to_string();
+                    config.cas_strength = 0.35;
+                    config.custom_target_kb = 0; // 不限体积
+                }
                 config.mode = ProcessMode::Custom;
             }
         }
@@ -829,8 +836,12 @@ impl eframe::App for ImageCompressorApp {
                                         .clicked()
                                         {
                                             self.config.usage_mode = "custom".to_string();
-                                            // P1a：切到自定义时归一化画质模式，消除从社交平台残留 "max" 导致的下拉显示错乱
-                                            self.config.quality_mode = "normal".to_string();
+                                            // 自定义默认画质优先，同步最高画质基线到高级面板
+                                            self.config.quality_mode = "max".to_string();
+                                            self.config.custom_quality = self.config.custom_quality.max(96);
+                                            self.config.subsampling = "444".to_string();
+                                            self.config.cas_strength = 0.35;
+                                            self.config.custom_target_kb = 0;
                                             self.show_advanced = true;
                                         }
                                     });
@@ -955,7 +966,9 @@ impl eframe::App for ImageCompressorApp {
                                                         .color(egui::Color32::from_rgb(30, 41, 59)),
                                                 );
                                                 let qm_label =
-                                                    if self.config.quality_mode == "perceptual" {
+                                                    if self.config.quality_mode == "max" {
+                                                        "画质优先 (推荐)"
+                                                    } else if self.config.quality_mode == "perceptual" {
                                                         "小而美 (推荐)"
                                                     } else {
                                                         "普通"
@@ -967,6 +980,20 @@ impl eframe::App for ImageCompressorApp {
                                                         ),
                                                     )
                                                     .show_ui(ui, |ui| {
+                                                        if ui
+                                                            .selectable_value(
+                                                                &mut self.config.quality_mode,
+                                                                "max".to_string(),
+                                                                "画质优先 (推荐)",
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            self.config.custom_quality =
+                                                                self.config.custom_quality.max(96);
+                                                            self.config.subsampling = "444".to_string();
+                                                            self.config.cas_strength = 0.35;
+                                                            self.config.custom_target_kb = 0;
+                                                        }
                                                         ui.selectable_value(
                                                             &mut self.config.quality_mode,
                                                             "perceptual".to_string(),
