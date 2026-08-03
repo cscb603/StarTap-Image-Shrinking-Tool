@@ -42,6 +42,6 @@ v4.4.1 把"导出目录记忆"做顺了。v4.4.2 回到**健壮性和体验细�
 
 ## 下载
 
-- 🍎 Mac：待上传蓝奏云（上传后替换此链接）
-- 🪟 Win：待上传蓝奏云（上传后替换此链接）
+- 🍎 Mac：https://wwbfk.lanzoub.com/ifuNW40bu62j
+- 🪟 Win：https://wwbfk.lanzoub.com/iQxvR40bu5ij
 - GitHub Release（备用）：https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.2
