@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>星TAP 图片高速压缩 · 让你的照片发出去不再变糊</title>
+<style>
+  :root {
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --ink: #1e293b;
+    --muted: #64748b;
+    --faint: #94a3b8;
+    --line: #e2e8f0;
+    --accent: #2563eb;
+    --accent-soft: #eff6ff;
+    --accent-2: #0ea5e9;
+    --ok: #16a34a;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 22px; }
+  /* Hero */
+  .hero {
+    background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
+    border-bottom: 1px solid var(--line);
+    padding: 72px 0 56px;
+    text-align: center;
+  }
+  .hero .kicker {
+    display: inline-block;
+    font-size: 13px;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 5px 14px;
+    border-radius: 999px;
+    margin-bottom: 20px;
+    letter-spacing: .5px;
+  }
+  .hero h1 {
+    font-size: 34px;
+    line-height: 1.35;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    max-width: 680px;
+    margin: 0 auto 16px;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero p.sub {
+    font-size: 16px;
+    color: var(--muted);
+    max-width: 600px;
+    margin: 0 auto 30px;
+  }
+  .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 13px 26px; border-radius: 10px; font-size: 15px; font-weight: 600;
+    text-decoration: none; transition: transform .12s ease, box-shadow .12s ease;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(37,99,235,.28); }
+  .btn-ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .hero .meta { margin-top: 18px; font-size: 12px; color: var(--faint); }
+
+  /* Sections */
+  section { padding: 56px 0; border-bottom: 1px solid var(--line); }
+  .sec-head { text-align: center; margin-bottom: 36px; }
+  .sec-head h2 { font-size: 25px; font-weight: 800; letter-spacing: -.3px; }
+  .sec-head p { color: var(--muted); font-size: 15px; margin-top: 8px; }
+
+  /* Pain intro */
+  .lead { font-size: 17px; color: var(--ink); }
+  .lead b { color: var(--accent); }
+
+  /* Feature grid */
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+  @media (max-width: 640px){ .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 22px; transition: box-shadow .15s ease, transform .15s ease;
+  }
+  .card:hover { box-shadow: 0 10px 30px rgba(15,23,42,.06); transform: translateY(-2px); }
+  .card .ico { font-size: 26px; }
+  .card h3 { font-size: 17px; margin: 10px 0 6px; font-weight: 700; }
+  .card p { font-size: 14px; color: var(--muted); }
+  .card .tag {
+    display:inline-block; font-size:11px; color: var(--ok); background:#f0fdf4;
+    border:1px solid #bbf7d0; padding:2px 9px; border-radius:999px; margin-top:10px;
+  }
+
+  /* Steps */
+  .steps { display: grid; grid-template-columns: repeat(3,1fr); gap: 18px; }
+  @media (max-width: 640px){ .steps { grid-template-columns: 1fr; } }
+  .step { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; text-align:center; }
+  .step .num {
+    width: 38px; height: 38px; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
+    display:flex; align-items:center; justify-content:center; font-weight:800; margin: 0 auto 12px;
+  }
+  .step h3 { font-size: 16px; margin-bottom: 6px; }
+  .step p { font-size: 13.5px; color: var(--muted); }
+
+  /* Scenario */
+  .scn { background: var(--card); border:1px solid var(--line); border-radius: var(--radius); padding: 22px 24px; margin-bottom: 14px; }
+  .scn h3 { font-size: 16px; }
+  .scn h3 .who { color: var(--accent); }
+  .scn p { font-size: 14px; color: var(--muted); margin-top: 6px; }
+
+  /* Compare */
+  .compare { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 640px){ .compare { grid-template-columns: 1fr; } }
+  .compare .col { border-radius: var(--radius); padding: 22px; border:1px solid var(--line); }
+  .compare .before { background:#fff7ed; border-color:#fed7aa; }
+  .compare .after { background:#f0fdf4; border-color:#bbf7d0; }
+  .compare h3 { font-size: 15px; margin-bottom: 10px; }
+  .compare ul { list-style:none; font-size: 14px; color: var(--muted); }
+  .compare li { padding: 5px 0; }
+  .compare .before li::before { content:"✗ "; color:#ea580c; }
+  .compare .after li::before { content:"✓ "; color: var(--ok); }
+
+  /* Download */
+  .download { text-align:center; }
+  .dl-cards { display:flex; gap:18px; justify-content:center; flex-wrap:wrap; margin-top: 24px; }
+  .dl-card { background: var(--card); border:1px solid var(--line); border-radius: var(--radius); padding: 26px 34px; min-width: 220px; }
+  .dl-card .os { font-size: 15px; color: var(--muted); }
+  .dl-card .big { font-size: 19px; font-weight: 800; margin: 6px 0 14px; }
+  .dl-card a { color: var(--accent); font-weight:600; text-decoration:none; }
+  .dl-card a:hover { text-decoration: underline; }
+
+  /* Footer */
+  footer { padding: 40px 0 60px; text-align:center; color: var(--faint); font-size: 12.5px; }
+  footer a { color: var(--muted); text-decoration: none; }
+  .fine { font-size: 11.5px; color: var(--faint); margin-top: 10px; line-height: 1.6; }
+
+  /* Quote */
+  .quote {
+    border-left: 3px solid var(--accent); background: var(--accent-soft);
+    padding: 16px 20px; border-radius: 0 12px 12px 0; font-size: 15.5px; color: var(--ink);
+    margin: 22px 0;
+  }
+  .quote span { color: var(--muted); font-size: 13px; display:block; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+  <!-- HERO -->
+  <header class="hero">
+    <div class="wrap">
+      <span class="kicker">星TAP 实验室 · 图片高速压缩 v4.4.3</span>
+      <h1>你拍得清清楚楚的照片，<br/>为什么一发微信就<span>糊成一团</span>？</h1>
+      <p class="sub">不是你拍得不好，是平台会偷偷把大图再压一遍，画质就丢了。<br/>这个工具，在发出去之前就帮你按平台的规矩提前处理好。</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.3">🍎 下载 Mac 版</a>
+        <a class="btn btn-primary" href="https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.3">🪟 下载 Windows 版</a>
+        <a class="btn btn-ghost" href="#how">怎么用？</a>
+      </div>
+      <div class="meta">Mac 解压即用 · Windows 双击即跑 · 完全免费 · 本地处理不上传</div>
+    </div>
+  </header>
+
+  <!-- PAIN -->
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>先说个你可能踩过的坑</h2>
+      </div>
+      <p class="lead">
+        你用手机拍了张超清照片，发给朋友，结果对方收到的是一张<b>糊图</b>——颜色发灰、细节抹平、脸都快认不出了。
+        你以为是自己手机不行？真不是。<b>是微信、小红书这些平台，收到大图会自动再压一遍</b>，而且压得很狠。
+        你原图再清楚，它也照压不误。
+      </p>
+      <div class="quote">
+        所以问题的关键不是"把图压小"，而是：<b>在平台动手之前，先把图压到它"懒得再压"的大小，同时把画质顶到它能接受的上限。</b>
+        <span>—— 这正是这个工具在做的事。</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>它到底帮你做了什么</h2>
+        <p>这些事它都在后台默默完成，你基本不用管</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <div class="ico">🎯</div>
+          <h3>画质优先（开箱即用）</h3>
+          <p>默认就走高质量档：接近无损的画质起步、颜色完整保留、锐化补得自然。你大部分时候什么都不用调。</p>
+          <span class="tag">默认开启</span>
+        </div>
+        <div class="card">
+          <div class="ico">🛡️</div>
+          <h3>平台防二压</h3>
+          <p>按微信 / 小红书 / Instagram 的规则提前把尺寸和大小准备好，发出去不再被平台翻压变糊。</p>
+          <span class="tag">微信 · 小红书 · Ins</span>
+        </div>
+        <div class="card">
+          <div class="ico">✨</div>
+          <h3>微反差锐化（看图下菜）</h3>
+          <p>自动判断：人像少锐、风景多补、高噪点图不锐。锐完像原图自带的清晰，不显假。</p>
+          <span class="tag">智能不扎眼</span>
+        </div>
+        <div class="card">
+          <div class="ico">🖼️</div>
+          <h3>大图防爆</h3>
+          <p>几千万像素的中画幅、超大 TIFF 也不怕，自动按平台要求调整到刚好，内存不爆、界面不卡。</p>
+          <span class="tag">中画幅友好</span>
+        </div>
+        <div class="card">
+          <div class="ico">📝</div>
+          <h3>保留拍摄信息</h3>
+          <p>拍摄时间、相机型号、参数等 EXIF 信息完整保留，发图不丢"身份证"。</p>
+          <span class="tag">EXIF 零损失</span>
+        </div>
+        <div class="card">
+          <div class="ico">⚡</div>
+          <h3>拖一堆也不卡</h3>
+          <p>一次拖几百上千张图，扫描放后台跑，主界面全程不卡；某张失败只标红这一张，其余继续。</p>
+          <span class="tag">批量无压力</span>
+        </div>
+        <div class="card">
+          <div class="ico">🧱</div>
+          <h3>一张炸了不连累整批</h3>
+          <p>以前某张图解码失败可能整软件崩。现在单张隔离保护，失败项悬停看原因，处理完给你清单。</p>
+          <span class="tag">稳</span>
+        </div>
+        <div class="card">
+          <div class="ico">🌿</div>
+          <h3>小而美模式（省流量）</h3>
+          <p>想极致省流量？切到"小而美"，图压得很小但依然清晰，发朋友圈、传图床都合适。</p>
+          <span class="tag">可选</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW -->
+  <section id="how">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>三步，就这么简单</h2>
+        <p>不用学，拖进去就完事</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="num">1</div>
+          <h3>把照片拖进窗口</h3>
+          <p>一张也行，一千张也行。拖进去就自动开始，不用点"开始"。</p>
+        </div>
+        <div class="step">
+          <div class="num">2</div>
+          <h3>选个平台（可选）</h3>
+          <p>默认就是"画质优先 + 微信"。想发小红书就切一下，别的什么都不用管。</p>
+        </div>
+        <div class="step">
+          <div class="num">3</div>
+          <h3>收图，发走</h3>
+          <p>处理完自动弹出输出文件夹。图已经在里面了，直接发微信/小红书。</p>
+        </div>
+      </div>
+      <div class="quote">
+        进阶一点：勾选"保持原文件名（输出到别处）可以指定导出目录，这个目录会记住，下次不用重新选。
+        <span>—— 给整理狂魔的小福利</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- SCENARIOS -->
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>这四种场景，它最对味</h2>
+        <p>从发朋友圈到开店卖货，从接 AI 批处理到做证件照，一个工具全包了</p>
+      </div>
+
+      <div class="scn">
+        <h3><span class="who">① 社媒分享：微信 / 小红书 / Instagram</span></h3>
+        <p>你精修的旅行照、探店打卡、日常九宫格，最怕发出去被平台再翻压一遍。提前按各家规则把尺寸和大小压好，发出去就是你想呈现的样子——色彩饱满、细节在线，不再"精修两小时，发出糊成渣"。</p>
+      </div>
+
+      <div class="scn">
+        <h3><span class="who">② 商家商品图：服装 / 美食 / 产品</span></h3>
+        <p>淘宝、拼多多、美团、小红书店铺的商品图，最怕被压糊——衣服的纹理、菜品的光泽、产品的质感一压就没，详情页立刻显廉价。用它压缩，在平台允许的大小里保留<b>最大画质</b>：图更小了，但质感一点不丢，点击转化自然更好。</p>
+      </div>
+
+      <div class="scn">
+        <h3><span class="who">③ 接 AI 批量压缩，量大也不降质</span></h3>
+        <p>软件带 AI 接口（JSON 信封 + 命令行），能直接嵌进你的工作流：几千张素材图自动批量压缩，同时<b>锁定画质档位</b>——不会因为量大就偷偷降质。拖入即跑，不用每张手动设参数，效率党友好。</p>
+      </div>
+
+      <div class="scn">
+        <h3><span class="who">④ 证件照 / 投稿 / 开学季</span></h3>
+        <p>报名照、简历照、期刊投稿、学生证……都有死板的尺寸和大小限制（比如微信头像、学信网、指定 KB 数）。支持按<b>平台规则或自定义参数</b>，压缩到「指定大小 / 指定画质 / 指定尺寸」，拖进去一次设好，以后不用反复调，告别"差 2KB 又得重来"。</p>
+      </div>
+
+      <div class="scn">
+        <h3><span class="who">📷 附赠：摄影爱好者 / 中画幅玩家</span></h3>
+        <p>原图动辄几十上百 MB，发哪都糊。用它压到平台刚好能接受的大小，画质拉满还不丢细节；几千万像素的中画幅、超大 TIFF 也扛得住。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- COMPARE -->
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>普通压缩 vs 星TAP</h2>
+        <p>同样是要发出去的图</p>
+      </div>
+      <div class="compare">
+        <div class="col before">
+          <h3>❌ 直接发原图 / 普通压缩</h3>
+          <ul>
+            <li>平台收到大图，自动狠压一遍</li>
+            <li>颜色发灰、细节抹平、脸显假</li>
+            <li>你精心调的画质，到别人眼里没了</li>
+            <li>中画幅 / TIFF 直接传不动</li>
+          </ul>
+        </div>
+        <div class="col after">
+          <h3>✅ 用星TAP 处理后再发</h3>
+          <ul>
+            <li>提前压到平台"懒得再压"的大小</li>
+            <li>画质顶到平台能接受的上限</li>
+            <li>色彩饱满、微反差清晰、不显假</li>
+            <li>大图自动缩放，批量也不卡</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DOWNLOAD -->
+  <section class="download">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>现在就试试</h2>
+        <p>完全免费 · 本地处理不上传 · 不塞广告</p>
+      </div>
+      <div class="dl-cards">
+        <div class="dl-card">
+          <div class="os">🍎 macOS</div>
+          <div class="big">下载 Mac 版</div>
+          <a href="https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.3">GitHub Release · v4.4.3（Mac / Win）</a>
+        </div>
+        <div class="dl-card">
+          <div class="os">🪟 Windows</div>
+          <div class="big">下载 Win 版</div>
+          <a href="https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.3">GitHub Release · v4.4.3（Mac / Win）</a>
+        </div>
+      </div>
+      <p class="fine">
+        GitHub Release：<a href="https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.3">cscb603/StarTap-Image-Shrinking-Tool · v4.4.3</a>（国内用户访问慢可等蓝奏云镜像补充）<br/>
+        背后是 Rust 写的高性能处理内核，所以才这么快、这么稳。但你完全不用懂这些——拖进去，等几秒，收图，完事。
+      </p>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap">
+      © 2026 星TAP实验室 · 图片高速压缩 v4.4.3<br/>
+      本地处理 · EXIF 保留 · 大图防爆 · 平台防二压 · 高性能 Rust 内核
+    </div>
+  </footer>
+
+</body>
+</html>

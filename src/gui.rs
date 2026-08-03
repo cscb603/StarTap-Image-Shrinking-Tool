@@ -39,7 +39,6 @@ enum AppEvent {
     ProcessingProgress(usize, bool, Option<String>),
     ProcessingFinished(usize, usize),
     ClearFiles,
-    ShowOutputFolder,
     ShowAbout,
     ToggleDarkMode,
 }
@@ -72,6 +71,8 @@ struct ImageCompressorApp {
     stopped: bool,
     /// 正在后台异步扫描文件（拖入/浏览大量文件时不阻塞 UI）
     scanning: bool,
+    /// 本轮任务已打开过的输出目录（去重：同一目录不重复打开 Finder/资源管理器窗口）
+    opened_output_dir: Option<PathBuf>,
     tx: Sender<AppEvent>,
     rx: Receiver<AppEvent>,
 }
@@ -164,6 +165,7 @@ impl ImageCompressorApp {
             stop_requested: false,
             stopped: false,
             scanning: false,
+            opened_output_dir: None,
             tx,
             rx,
         }
@@ -210,6 +212,8 @@ impl ImageCompressorApp {
             self.clear_files();
         }
         self.scanning = true;
+        // 新一轮任务：重置「已打开目录」去重状态
+        self.opened_output_dir = None;
         let tx = self.tx.clone();
         let _ = std::thread::spawn(move || {
             let flat = Self::flatten_paths(paths);
@@ -222,6 +226,63 @@ impl ImageCompressorApp {
         self.processed_count = 0;
         self.success_count = 0;
         self.stopped = false;
+    }
+
+    /// 打开输出目录（去重版）：同一目录本轮已打开过则跳过，避免重复弹出 Finder/资源管理器窗口。
+    /// 调用点：① 处理完成自动打开；② 底部「📂 打开输出文件夹」按钮。
+    /// 注：跨平台无法可靠查询「某目录窗口是否已开」，这里用去重标记保证「本轮同一目录最多开一次」。
+    fn open_output_dir(&mut self) {
+        // 自定义导出目录优先；否则取首个文件的父目录（默认输出到原文件旁）
+        let dir = if let Some(d) = self.config.custom_output_dir.as_ref() {
+            Some(PathBuf::from(d))
+        } else {
+            self.files
+                .front()
+                .and_then(|f| f.path.parent().map(PathBuf::from))
+        };
+        if let Some(dir) = dir {
+            // 去重核心：本轮已为同一目录开过窗口就不再开
+            if self.opened_output_dir.as_ref() == Some(&dir) {
+                return;
+            }
+            if opener::open(&dir).is_ok() {
+                self.opened_output_dir = Some(dir);
+            }
+        }
+    }
+
+    /// 把本轮「后台自动做的优化」翻译成人话，给主页底部小字用。
+    /// 全部来自当前配置，处理完成后展示，让用户知道后台到底做了什么。
+    fn optimization_summary(&self) -> String {
+        let mut items: Vec<&str> = Vec::new();
+        items.push("压缩体积");
+        // 画质增强：画质优先=CAS 微反差锐化；小而美=感知增强；普通=标准压缩（不额外追加）
+        if self.config.quality_mode == "max" && self.config.cas_strength > 0.0 {
+            items.push("微反差锐化");
+        } else if self.config.quality_mode == "perceptual" && self.config.usage_mode != "archive" {
+            items.push("感知增强·小而美");
+        }
+        if self.config.enable_sharpening {
+            items.push("USM 锐化");
+        }
+        // 平台防二压
+        match self.config.platform.as_str() {
+            "wechat" | "wechat-new" => items.push("微信防二压"),
+            "xiaohongshu" => items.push("小红书防二压"),
+            "instagram" => items.push("Ins 防二压"),
+            _ => {}
+        }
+        // 拍摄信息保留（默认开启）
+        items.push("保留拍摄信息");
+        // 大图防爆
+        if self.config.custom_max_dim > 0 {
+            items.push("大图防爆");
+        }
+        // 保结构输出
+        if self.config.preserve_structure {
+            items.push("保结构输出");
+        }
+        items.join(" · ")
     }
 
     /// 三用途统一入口：social(平台预设) / archive(不缩放最高画质) / custom(高级参数)
@@ -237,6 +298,8 @@ impl ImageCompressorApp {
         self.stopped = false;
         self.stop_requested = false;
         self.stop_flag.store(false, Ordering::SeqCst);
+        // 新一轮任务：重置「已打开目录」去重状态
+        self.opened_output_dir = None;
 
         let files: Vec<FileItem> = self.files.clone().into_iter().collect();
         let mut config = self.config.clone();
@@ -432,8 +495,9 @@ impl eframe::App for ImageCompressorApp {
                     self.processed_count += 1;
                 }
                 AppEvent::ProcessingFinished(total, success) => {
+                    let was_stopped = self.stop_requested;
                     self.processing = false;
-                    if self.stop_requested {
+                    if was_stopped {
                         // 优雅停止收尾：processed_count 保持实际完成数，标记已停止
                         self.stopped = true;
                     } else {
@@ -443,16 +507,14 @@ impl eframe::App for ImageCompressorApp {
                     self.stop_requested = false;
                     // 配置记忆：用途/平台/画质/覆盖等随任务完成持久化
                     let _ = save_config(&self.config);
+                    // 完成（非中途停止且有产出）后自动打开输出目录，让用户感知「处理好了」
+                    // 去重：同一目录本轮只开一次（按钮已开过则这里跳过）
+                    if !was_stopped && self.success_count > 0 {
+                        self.open_output_dir();
+                    }
                     // 不清空列表，保留显示成功数量，等待用户查看
                 }
                 AppEvent::ClearFiles => self.clear_files(),
-                AppEvent::ShowOutputFolder => {
-                    if let Some(first) = self.files.front() {
-                        if let Some(dir) = first.path.parent() {
-                            let _ = opener::open(dir);
-                        }
-                    }
-                }
                 AppEvent::ShowAbout => self.show_about = true,
                 AppEvent::ToggleDarkMode => {}
             }
@@ -502,7 +564,7 @@ impl eframe::App for ImageCompressorApp {
             });
 
         egui::TopBottomPanel::bottom("status_panel")
-            .exact_height(90.0)
+            .exact_height(108.0)
             .frame(
                 egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(20, 15))
@@ -519,7 +581,7 @@ impl eframe::App for ImageCompressorApp {
                             let status_text = if self.stop_requested {
                                 "正在优雅停止…当前图片处理完即停".to_string()
                             } else {
-                                format!("正在处理 {} 个文件...", self.processed_count)
+                                format!("✨ 正在为你提升画质 · 已处理 {} 个", self.processed_count)
                             };
                             ui.label(
                                 egui::RichText::new(status_text)
@@ -582,6 +644,15 @@ impl eframe::App for ImageCompressorApp {
                                 .size(14.0)
                                 .strong()
                                 .color(egui::Color32::from_rgb(71, 85, 105)),
+                            );
+                        }
+                        // 已处理过：在底部小字展示「后台自动做的优化」，让用户感知后台运行进展，而非保持静默
+                        if self.processed_count > 0 {
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(format!("已自动：{}", self.optimization_summary()))
+                                    .size(10.0)
+                                    .color(egui::Color32::from_rgb(100, 116, 139)),
                             );
                         }
                     }
@@ -1313,11 +1384,7 @@ impl eframe::App for ImageCompressorApp {
                             ui.horizontal(|ui| {
                                 ui.label(format!("✅ 成功处理 {} 个文件", self.success_count));
                                 if ui.button("📂 打开输出文件夹").clicked() {
-                                    if let Some(first) = self.files.front() {
-                                        if let Some(dir) = first.path.parent() {
-                                            let _ = opener::open(dir);
-                                        }
-                                    }
+                                    self.open_output_dir();
                                 }
                             });
                         }

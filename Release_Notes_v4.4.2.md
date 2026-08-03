@@ -1,6 +1,34 @@
-# 星TAP 高清缩图 v4.4.2 — 稳定性加固 + 失败可见 + 大批量不卡
+# 星TAP 高清缩图 v4.4.3 — 输出目录自动打开（去重）+ 后台进展可见 + 修复
 
 v4.4.1 把"导出目录记忆"做顺了。v4.4.2 回到**健壮性和体验细节**：单张图崩溃不再拖垮整个软件、失败原因看得到、一次拖上千张也不卡界面。
+
+v4.4.2 把健壮性做扎实了。v4.4.3 回到**体验细节 + 一个真 bug 修复**：处理完自动弹输出目录（且同目录不重复弹）、主页底部小字让用户看见后台在干嘛、修掉自定义导出目录时「打开文件夹」开错目录。
+
+## v4.4.3 改了什么
+
+### 体验 · 输出目录自动打开（去重）
+
+- 处理完成（非中途停止且有产出）后自动弹出输出文件夹（Finder / 资源管理器），不用再手动去找。
+- 新增 `opened_output_dir` 去重标记：同一目录本轮只弹一次——按钮已开过则完成时跳过，反之亦然，杜绝连环弹窗。
+- 修 bug：设了「导出到别处」时，旧版「打开输出文件夹」会错误打开原图文件夹；现在优先用自定义目录，与内核输出解析一致。
+
+### 体验 · 后台进展可见（告别静默）
+
+- 处理中状态栏显示「✨ 正在为你提升画质 · 已处理 N 个」。
+- 处理完在底部小字列出本轮后台自动做的优化（`optimization_summary()`，纯人话）：压缩体积 · 微反差锐化 · 平台防二压 · 保留拍摄信息 · 大图防爆… 让用户感知后台在干啥。
+
+### 工程
+
+- `APP_VERSION` 升 v4.4.3（关于页 / 状态栏 / 卡片标题统一引用）。
+- 移除从未被发送的 `AppEvent::ShowOutputFolder` 死代码。
+
+## 兼容性
+
+- v4.4.0 / v4.4.1 / v4.4.2 全部功能保持；配置文件向后兼容；CLI/JSON 行为不变，AI 调用方不受影响。
+
+## 门禁
+
+`cargo check --features "gui,cli"` ✅ · lib 13 测 ✅ · GUI 1 测 ✅ · `clippy -D warnings` ✅ · `cargo fmt` ✅
 
 ## 一句话功能
 
@@ -42,6 +70,5 @@ v4.4.1 把"导出目录记忆"做顺了。v4.4.2 回到**健壮性和体验细�
 
 ## 下载
 
-- 🍎 Mac：https://wwbfk.lanzoub.com/ifuNW40bu62j
-- 🪟 Win：https://wwbfk.lanzoub.com/iQxvR40bu5ij
-- GitHub Release（备用）：https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.2
+- 🍎 Mac / 🪟 Win：GitHub Release（v4.4.3）：https://github.com/cscb603/StarTap-Image-Shrinking-Tool/releases/tag/v4.4.3
+- 国内蓝奏云镜像：上传后补充（暂以 GitHub Release 为准）

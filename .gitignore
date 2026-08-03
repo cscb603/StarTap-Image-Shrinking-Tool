@@ -8,3 +8,15 @@ compressed/
 *.log
 benchmark*
 .DS_Store
+
+# 4.4.2 发布产物（已归档到 ~/Documents/AI/research_archive/，不再跟踪）
+mac_guide*
+mac放权指南*
+promo*
+screenshot_*
+test_input.jpg
+test_mode_*
+test_persist_check.png
+v4.4.1_UIUX*
+图片高速压缩_Mac_v4.4.0/
+星TAP_v4.4_*
