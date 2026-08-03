@@ -16,8 +16,15 @@ echo "🧹 清理旧的构建..."
 rm -rf "${APP_DIR}"
 
 # 2. 总是重新编译 Release 版本（源码可能已改，不能因 target 存在就跳过，否则会把旧二进制原样打进 app）
+# 注意：binary 需要 gui+cli features，否则 cargo build --release 默认只编译 lib，不会生成 rust_image_compressor
 echo "🦀 编译 Release 版本..."
-cargo build --release
+cargo build --release --features "gui,cli"
+
+# 2.5 防御：确保二进制真的生成了
+if [ ! -f "target/release/rust_image_compressor" ]; then
+    echo "❌ 错误：未找到 target/release/rust_image_compressor，编译失败"
+    exit 1
+fi
 
 # 3. 创建 App Bundle 结构
 echo "📦 创建 App Bundle 结构..."

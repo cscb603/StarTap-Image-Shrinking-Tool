@@ -62,7 +62,6 @@ struct ImageCompressorApp {
     success_count: usize,
     show_about: bool,
     show_advanced: bool,
-    custom_output_dir: Option<PathBuf>,
     about_version: String,
     /// 优雅停止旗标：置位后当前图片处理完即停，已输出图片保留
     stop_flag: Arc<AtomicBool>,
@@ -148,12 +147,6 @@ impl ImageCompressorApp {
 
         cc.egui_ctx.set_fonts(fonts);
 
-        // v4.4.1：从持久化配置恢复自定义导出目录
-        let custom_output_dir = config
-            .custom_output_dir
-            .as_ref()
-            .map(|s| PathBuf::from(s));
-
         Self {
             dark_mode: false,
             config,
@@ -163,7 +156,6 @@ impl ImageCompressorApp {
             success_count: 0,
             show_about: false,
             show_advanced: false,
-            custom_output_dir,
             about_version: "v4.4.1".to_string(),
             stop_flag: Arc::new(AtomicBool::new(false)),
             stop_requested: false,
@@ -226,7 +218,7 @@ impl ImageCompressorApp {
 
         let files: Vec<FileItem> = self.files.clone().into_iter().collect();
         let mut config = self.config.clone();
-        let custom_output_dir = self.custom_output_dir.clone();
+        let custom_output_dir = self.config.custom_output_dir.as_ref().map(PathBuf::from);
         let tx = self.tx.clone();
         let stop_flag = self.stop_flag.clone();
 
@@ -547,7 +539,7 @@ impl eframe::App for ImageCompressorApp {
                     }
                     ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new("星TAP 实验室 | 高性能 Rust 内核 v4.4 · 防二压画质优先")
+                        egui::RichText::new("星TAP 实验室 | 高性能 Rust 内核 v4.4.1 · 防二压画质优先")
                             .size(10.0)
                             .color(egui::Color32::from_rgb(148, 163, 184)),
                     );
@@ -634,9 +626,9 @@ impl eframe::App for ImageCompressorApp {
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
                                         ui.label(
-                                            egui::RichText::new("✨ 画质优先 v4.4")
-                                                .strong()
-                                                .color(egui::Color32::from_rgb(37, 99, 235)),
+                        egui::RichText::new("✨ 画质优先 v4.4.1")
+                            .strong()
+                            .color(egui::Color32::from_rgb(37, 99, 235)),
                                         );
                                         ui.add_space(10.0);
                                         ui.label(
@@ -907,10 +899,11 @@ impl eframe::App for ImageCompressorApp {
                                                     .color(egui::Color32::from_rgb(71, 85, 105)),
                                             );
                                             let display_path = self
+                                                .config
                                                 .custom_output_dir
                                                 .as_ref()
-                                                .map(|p| p.to_string_lossy().to_string())
-                                                .unwrap_or_else(|| "默认 (原文件旁)".to_owned());
+                                                .map(|s| s.as_str())
+                                                .unwrap_or("默认 (原文件旁)");
                                             ui.label(
                                                 egui::RichText::new(display_path)
                                                     .size(12.0)
@@ -921,16 +914,17 @@ impl eframe::App for ImageCompressorApp {
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
-                                                    if self.custom_output_dir.is_some()
+                                                    if self.config.custom_output_dir.is_some()
                                                         && ui.button("重置").clicked()
                                                     {
-                                                        self.custom_output_dir = None;
+                                                        self.config.custom_output_dir = None;
                                                     }
                                                     if ui.button("更改").clicked() {
                                                         if let Some(path) =
                                                             rfd::FileDialog::new().pick_folder()
                                                         {
-                                                            self.custom_output_dir = Some(path);
+                                                            self.config.custom_output_dir =
+                                                                Some(path.to_string_lossy().to_string());
                                                         }
                                                     }
                                                 },
@@ -1306,11 +1300,7 @@ impl eframe::App for ImageCompressorApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // v4.4.1：把 GUI 中用户指定的自定义导出目录写回配置持久化
-        self.config.custom_output_dir = self
-            .custom_output_dir
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string());
+        // v4.4.1：config 已包含 custom_output_dir，直接持久化即可
         let _ = save_config(&self.config);
     }
 }
