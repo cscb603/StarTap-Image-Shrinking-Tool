@@ -46,7 +46,7 @@ pub enum ColorSpace {
 
 /// App 产品版本号（唯一真源）。与 lib crate 的 `version = "0.1.1"` 是两套体系，
 /// GUI 三处版本显示（关于页 / 状态栏 / 卡片标题）统一引用此常量，升版只改这里。
-pub const APP_VERSION: &str = "v4.4.1";
+pub const APP_VERSION: &str = "v4.4.2";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
