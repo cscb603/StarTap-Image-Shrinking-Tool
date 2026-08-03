@@ -1,11 +1,11 @@
 #!/bin/bash
-# 星TAP 高清缩图 v4.3.0 - macOS App 打包脚本
+# 星TAP 高清缩图 v4.4.1 - macOS App 打包脚本
 # 星 TAP 实验室出品
 
 set -e
 
 APP_NAME="图片高速压缩"
-VERSION="4.4.0"
+VERSION="4.4.1"
 APP_DIR="${APP_NAME}.app"
 BINARY_NAME="ImageCompressor"
 

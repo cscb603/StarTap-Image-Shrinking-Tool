@@ -216,7 +216,7 @@ AI 调用前可用 `--capabilities` 获取当前版本支持的完整参数 sche
 - **stderr 分级日志**：日志走 stderr，统一前缀 `[INFO]` / `[WARN]` / `[ERROR]`；stdout 只放 JSON / JSONL 数据，互不污染，AI 可零分支解析。
 - **环境自检（`--self-check`）**：内置生成测试图 → 完整压缩管线 → 逐项校验（pipeline / output_size / decode_output）→ 输出健康报告。接入新机器/新版本前先跑一遍验证二进制健康。
 
-> 当前版本：**v4.4.0**（schema_version `1.0` 信封 / `1.1` capabilities）。AI 接入前建议先 `--capabilities` 探测，再 `--self-check` 验证。
+> 当前版本：**v4.4.1**（schema_version `1.0` 信封 / `1.1` capabilities）。AI 接入前建议先 `--capabilities` 探测，再 `--self-check` 验证。
 
 ## 下载
 

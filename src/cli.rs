@@ -1129,6 +1129,8 @@ impl Cli {
             output_suffix: self.output_suffix.clone(),
             // v4.4.0：CAS 默认关；画质优先档由 apply_platform_preset 置 0.35，--cas-strength 可覆盖
             cas_strength: 0.0,
+            // v4.4.1：CLI 不持久化自定义导出目录；GUI 专用
+            custom_output_dir: None,
         };
         // 平台预设自动填长边/体积/Q 并强制 sRGB（§2）。显式 --target-budget-kb 覆盖预设体积线。
         // --usage-mode social 但没给 --platform 时按默认 wechat 预设（与 GUI 默认一致）。

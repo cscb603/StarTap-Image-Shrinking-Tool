@@ -1,4 +1,4 @@
-//! GUI 层（人类交互界面）—— 4.1.0 版面骨架 + v4.4.0 画质优先模式
+//! GUI 层（人类交互界面）—— 4.1.0 版面骨架 + v4.4.1 导出目录记忆 + 首页目录选择
 //!
 //! 解耦约定：本文件只做 UI 与交互编排，压缩内核全部走 lib.rs
 //! （app_config_to_process_config / Processor），与 CLI/AI-JSON 三方共用同一套语义。
@@ -148,6 +148,12 @@ impl ImageCompressorApp {
 
         cc.egui_ctx.set_fonts(fonts);
 
+        // v4.4.1：从持久化配置恢复自定义导出目录
+        let custom_output_dir = config
+            .custom_output_dir
+            .as_ref()
+            .map(|s| PathBuf::from(s));
+
         Self {
             dark_mode: false,
             config,
@@ -157,8 +163,8 @@ impl ImageCompressorApp {
             success_count: 0,
             show_about: false,
             show_advanced: false,
-            custom_output_dir: None,
-            about_version: "v4.4.0".to_string(),
+            custom_output_dir,
+            about_version: "v4.4.1".to_string(),
             stop_flag: Arc::new(AtomicBool::new(false)),
             stop_requested: false,
             stopped: false,
@@ -873,13 +879,12 @@ impl eframe::App for ImageCompressorApp {
                                     ui.horizontal(|ui| {
                                         ui.checkbox(
                                             &mut self.config.overwrite,
-                                            egui::RichText::new("覆盖原图 (不改名)").color(
-                                                if is_overwrite {
+                                            egui::RichText::new("覆盖原图 (直接替换原文件)")
+                                                .color(if is_overwrite {
                                                     egui::Color32::RED
                                                 } else {
                                                     egui::Color32::from_rgb(71, 85, 105)
-                                                },
-                                            ),
+                                                }),
                                         );
                                         ui.add_space(20.0);
                                         let can_keep_name = !is_overwrite;
@@ -887,10 +892,51 @@ impl eframe::App for ImageCompressorApp {
                                             can_keep_name,
                                             egui::Checkbox::new(
                                                 &mut self.config.keep_original_name,
-                                                "保持原名 (导出到别处)",
+                                                "保持原文件名 (输出到别处)",
                                             ),
                                         );
                                     });
+
+                                    // v4.4.1：勾选"保持原文件名"后，直接在首页显示导出目录选择，
+                                    // 避免用户不知道"别处"在哪设置。
+                                    if !is_overwrite && self.config.keep_original_name {
+                                        ui.add_space(6.0);
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("导出目录:")
+                                                    .color(egui::Color32::from_rgb(71, 85, 105)),
+                                            );
+                                            let display_path = self
+                                                .custom_output_dir
+                                                .as_ref()
+                                                .map(|p| p.to_string_lossy().to_string())
+                                                .unwrap_or_else(|| "默认 (原文件旁)".to_owned());
+                                            ui.label(
+                                                egui::RichText::new(display_path)
+                                                    .size(12.0)
+                                                    .color(egui::Color32::from_rgb(37, 99, 235))
+                                                    .strong(),
+                                            );
+
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if self.custom_output_dir.is_some()
+                                                        && ui.button("重置").clicked()
+                                                    {
+                                                        self.custom_output_dir = None;
+                                                    }
+                                                    if ui.button("更改").clicked() {
+                                                        if let Some(path) =
+                                                            rfd::FileDialog::new().pick_folder()
+                                                        {
+                                                            self.custom_output_dir = Some(path);
+                                                        }
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    }
                                 });
                             });
                     }
@@ -998,45 +1044,6 @@ impl eframe::App for ImageCompressorApp {
                                         });
 
                                     ui.add_space(15.0);
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new("导出目录:")
-                                                .color(egui::Color32::from_rgb(71, 85, 105)),
-                                        )
-                                        .on_hover_text("留空 = 与原图同目录");
-                                        let display_path = self
-                                            .custom_output_dir
-                                            .as_ref()
-                                            .map(|p| p.to_string_lossy().to_string())
-                                            .unwrap_or_else(|| "默认 (原文件旁)".to_owned());
-
-                                        ui.label(
-                                            egui::RichText::new(display_path)
-                                                .size(12.0)
-                                                .color(egui::Color32::from_rgb(37, 99, 235))
-                                                .strong(),
-                                        );
-
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                if self.custom_output_dir.is_some()
-                                                    && ui.button("重置").clicked()
-                                                {
-                                                    self.custom_output_dir = None;
-                                                }
-                                                if ui.button("更改").clicked() {
-                                                    if let Some(path) =
-                                                        rfd::FileDialog::new().pick_folder()
-                                                    {
-                                                        self.custom_output_dir = Some(path);
-                                                    }
-                                                }
-                                            },
-                                        );
-                                    });
-
-                                    ui.add_space(10.0);
                                     ui.horizontal(|ui| {
                                         ui.label(
                                             egui::RichText::new("导出格式:")
@@ -1299,6 +1306,11 @@ impl eframe::App for ImageCompressorApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // v4.4.1：把 GUI 中用户指定的自定义导出目录写回配置持久化
+        self.config.custom_output_dir = self
+            .custom_output_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
         let _ = save_config(&self.config);
     }
 }

@@ -85,6 +85,9 @@ pub struct AppConfig {
     // v4.4.0：CAS 锐化强度（0=关闭；画质优先档默认 0.35，缩放比>1.3 时自动补偿降采样柔化）
     #[serde(default)]
     pub cas_strength: f32,
+    // v4.4.1：GUI 自定义导出目录记忆（用户通过文件选择器指定的输出目录，None=默认原文件旁）
+    #[serde(default)]
+    pub custom_output_dir: Option<String>,
 }
 
 fn default_usage_mode() -> String {
@@ -130,6 +133,7 @@ impl Default for AppConfig {
             preserve_structure: false,
             output_suffix: None,
             cas_strength: 0.0,
+            custom_output_dir: None,
         }
     }
 }
