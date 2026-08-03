@@ -82,11 +82,11 @@
 - **到此停止**：不升版本、不 git push、不 Release（发布已在 Phase C 完成）
 - 本地 commit 保存进度，回主对话报告「验收 OK，P0/P1 已实现」
 
-## §10 范围外（本次不做，留作后续迭代）
-- P2 `FileItem.error` 写入 UI（需改 `AppEvent` 协议 + 列表 hover，中等侵入）
-- P2 拖拽 >1000 文件异步扫描
-- P3 GUI headless smoke test（需 eframe test harness）
-- 原因：ROI 抓大头，P0/P1 收益/风险比最高；P2/P3 留待独立迭代。
+## §10 范围外（原定留待迭代 → 已于 2026-07-31 全量完成）
+- P2 `FileItem.error` 写入 UI ✅ 已完成（见 §11）
+- P2 拖拽 >1000 文件异步扫描 ✅ 已完成（见 §11）
+- P3 GUI headless smoke test ✅ 已完成（见 §11）
+- 原因（原）：ROI 抓大头，P0/P1 收益/风险比最高。用户后续要求 P0~P3 全做，故补充实施。
 
 ## 参考代码位置
 | 要什么 | 去哪读 |
@@ -96,3 +96,35 @@
 | 自定义卡片点击 | `src/gui.rs:700-711` |
 | 版本显示 3 处 | `src/gui.rs:159 / 542 / 629` |
 | 配置映射 | `src/lib.rs:817-844` |
+
+## §11 P2 / P3 补充实施记录（2026-07-31）
+
+> 用户指令：p0～p3 都搞好，升级优化完善好哦，我后头来上传蓝奏云，再更新。
+> 即：只改代码，不 push、不发版（用户自传蓝奏云并更新）。
+
+### P2a 错误写入 + 文件列表 hover 展示
+- `AppEvent::ProcessingProgress` 由 `(usize, usize)` 改为 `(usize, bool, Option<String>)`：携带失败原因。
+- 工作线程：捕获 `processor.process_image` 的 `Err`，`result.err().map(|e| e.to_string())` 写入事件。
+- 事件处理器 `ProcessingProgress` 分支：`item.error = err`，落盘到 `FileItem.error`。
+- 新增文件列表渲染（处理完成后、`!self.processing` 时显示）：每行文件名 + ✅/❌/⏳ 状态图标；`item.error` 存在时 `on_hover_text` 显示「处理失败原因：…」。
+- 此前 `FileItem.error` 字段存在但从未被读取；本次首次接入 UI。
+
+### P2b 拖拽大量文件异步扫描
+- 新增 `scanning: bool` 状态 + `scan_files_async()` / `flatten_paths()`（纯函数，递归展开目录）。
+- 拖入与「浏览文件」改走 `scan_files_async`：标记 `scanning=true` → 后台线程递归收集 → `FilesAdded` 事件刷新列表并自动 `start_processing`。
+- 拖放区新增「🔍 正在扫描文件…」态；拖放/点击处理期间 `!self.scanning` 门禁，防重入。
+- 收益：>1000 文件场景不再在主线程卡顿。
+
+### P3 GUI headless 序列化回归测试
+- `src/gui.rs` 末尾新增 `#[cfg(test)] mod smoke_tests`：
+  `config_custom_output_dir_roundtrip` —— 构造 `AppConfig { keep_original_name:true, custom_output_dir:Some(..) }`，`serde_json` 往返，断言字段保留且 JSON 含 `custom_output_dir`。
+- 说明：eframe 无 headless 启动器（需 GPU/显示），「启动 app」环节由 `cargo check --features "gui,cli"`（编译整 GUI）+ 本契约共同守护；回归目标「config 序列化包含 custom_output_dir」已精确覆盖。
+- 运行：`cargo test --bin rust_image_compressor --features "gui,cli"`（lib 13 测仍走 `cargo test --lib`）。
+
+### 门禁结果（2026-07-31）
+- `cargo check --features "gui,cli"` ✅
+- `cargo test --lib`（13 测）✅
+- `cargo test --bin rust_image_compressor --features "gui,cli"`（1 测）✅
+- `cargo clippy --features "gui,cli" --all-targets -- -D warnings` ✅
+- `cargo fmt --check` ✅
+- 提交：本地 commit（未 push、未发版，用户自传蓝奏云更新）。

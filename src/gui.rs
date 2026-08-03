@@ -35,7 +35,8 @@ use xtap_compress::{
 enum AppEvent {
     FilesAdded(Vec<PathBuf>),
     ProcessingStarted,
-    ProcessingProgress(usize, usize), // file_id, success_flag
+    /// file_id, 是否成功, 失败原因（仅失败时 Some，UI 列表 hover 展示）
+    ProcessingProgress(usize, bool, Option<String>),
     ProcessingFinished(usize, usize),
     ClearFiles,
     ShowOutputFolder,
@@ -48,7 +49,7 @@ struct FileItem {
     path: PathBuf,
     processed: bool,
     success: bool,
-    #[allow(dead_code)]
+    /// 处理失败原因（仅失败时填充），UI 文件列表 hover 展示
     error: Option<String>,
 }
 
@@ -69,6 +70,8 @@ struct ImageCompressorApp {
     stop_requested: bool,
     /// 上一轮任务以“停止”收尾（状态栏提示用）
     stopped: bool,
+    /// 正在后台异步扫描文件（拖入/浏览大量文件时不阻塞 UI）
+    scanning: bool,
     tx: Sender<AppEvent>,
     rx: Receiver<AppEvent>,
 }
@@ -160,11 +163,14 @@ impl ImageCompressorApp {
             stop_flag: Arc::new(AtomicBool::new(false)),
             stop_requested: false,
             stopped: false,
+            scanning: false,
             tx,
             rx,
         }
     }
 
+    /// 将「已展开为单文件」的路径列表加入待处理队列（不递归）。
+    /// 递归展开目录由 `scan_files_async` / `flatten_paths` 在后台完成。
     fn add_files(&mut self, paths: Vec<PathBuf>) {
         // 如果列表不为空，说明是新一轮任务，清空并重置计数
         if !self.files.is_empty() {
@@ -172,27 +178,43 @@ impl ImageCompressorApp {
         }
 
         for path in paths {
+            self.files.push_back(FileItem {
+                path,
+                processed: false,
+                success: false,
+                error: None,
+            });
+        }
+    }
+
+    /// 递归展开目录为支持的图片文件列表（纯函数，无 UI 依赖，可安全在后台线程调用）。
+    fn flatten_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for path in paths {
             if path.is_dir() {
-                // GUI 总是递归收集（匹配 UI 上"自动递归处理子目录"的文案）
                 let mut temp = Vec::new();
                 collect_images(&path, &mut temp, true, 0, &mut Vec::new());
-                for p in temp {
-                    self.files.push_back(FileItem {
-                        path: p,
-                        processed: false,
-                        success: false,
-                        error: None,
-                    });
-                }
+                out.extend(temp);
             } else if path.is_file() && is_supported_image(&path) {
-                self.files.push_back(FileItem {
-                    path,
-                    processed: false,
-                    success: false,
-                    error: None,
-                });
+                out.push(path);
             }
         }
+        out
+    }
+
+    /// 异步扫描：先标记 scanning（UI 显示「正在扫描…」），后台线程递归展开目录，
+    /// 收集完成后通过 `FilesAdded` 事件刷新列表并自动开始处理，避免主线程卡顿（>1000 文件场景）。
+    fn scan_files_async(&mut self, paths: Vec<PathBuf>) {
+        // 新一轮任务：先清空旧列表，再进入扫描态
+        if !self.files.is_empty() {
+            self.clear_files();
+        }
+        self.scanning = true;
+        let tx = self.tx.clone();
+        let _ = std::thread::spawn(move || {
+            let flat = Self::flatten_paths(paths);
+            let _ = tx.send(AppEvent::FilesAdded(flat));
+        });
     }
 
     fn clear_files(&mut self) {
@@ -290,14 +312,17 @@ impl ImageCompressorApp {
                     if stop_flag.load(Ordering::SeqCst) {
                         return;
                     }
-                    let is_success = processor.process_image(path).is_ok();
+                    let result = processor.process_image(path);
+                    let is_success = result.is_ok();
+                    let err_text = if is_success {
+                        None
+                    } else {
+                        result.err().map(|e| e.to_string())
+                    };
                     if is_success {
                         success_count.fetch_add(1, Ordering::Relaxed);
                     }
-                    let _ = tx.send(AppEvent::ProcessingProgress(
-                        *index,
-                        if is_success { 1 } else { 0 },
-                    ));
+                    let _ = tx.send(AppEvent::ProcessingProgress(*index, is_success, err_text));
                 });
 
                 // 大图串行（一次一张，内存峰值 = 单张，绝不叠加）
@@ -305,14 +330,17 @@ impl ImageCompressorApp {
                     if stop_flag.load(Ordering::SeqCst) {
                         break;
                     }
-                    let is_success = processor.process_image(path).is_ok();
+                    let result = processor.process_image(path);
+                    let is_success = result.is_ok();
+                    let err_text = if is_success {
+                        None
+                    } else {
+                        result.err().map(|e| e.to_string())
+                    };
                     if is_success {
                         success_count.fetch_add(1, Ordering::Relaxed);
                     }
-                    let _ = tx.send(AppEvent::ProcessingProgress(
-                        *index,
-                        if is_success { 1 } else { 0 },
-                    ));
+                    let _ = tx.send(AppEvent::ProcessingProgress(*index, is_success, err_text));
                 }
             }));
             if let Err(e) = panic_err {
@@ -383,13 +411,21 @@ impl eframe::App for ImageCompressorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
-                AppEvent::FilesAdded(paths) => self.add_files(paths),
+                AppEvent::FilesAdded(paths) => {
+                    self.scanning = false;
+                    self.add_files(paths);
+                    // 拖入/浏览即自动处理：扫描完成后立即开始
+                    if !self.processing {
+                        self.start_processing();
+                    }
+                }
                 AppEvent::ProcessingStarted => self.processing = true,
-                AppEvent::ProcessingProgress(index, success_flag) => {
+                AppEvent::ProcessingProgress(index, success, err) => {
                     if let Some(item) = self.files.get_mut(index) {
                         item.processed = true;
-                        item.success = success_flag > 0;
-                        if success_flag > 0 {
+                        item.success = success;
+                        item.error = err;
+                        if success {
                             self.success_count += 1;
                         }
                     }
@@ -427,13 +463,12 @@ impl eframe::App for ImageCompressorApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
-        if !self.processing {
+        if !self.processing && !self.scanning {
             let files_dropped = ctx.input(|i| i.raw.dropped_files.clone());
             if !files_dropped.is_empty() {
                 let paths: Vec<PathBuf> =
                     files_dropped.into_iter().filter_map(|f| f.path).collect();
-                self.add_files(paths);
-                self.start_processing();
+                self.scan_files_async(paths);
             }
         }
 
@@ -1161,6 +1196,15 @@ impl eframe::App for ImageCompressorApp {
                             egui::FontId::proportional(13.0),
                             egui::Color32::from_rgb(100, 116, 139),
                         );
+                    } else if self.scanning {
+                        // 后台扫描中：提示用户等待，避免大批量文件卡 UI
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "🔍 正在扫描文件…（量大请稍候）",
+                            egui::FontId::proportional(13.0),
+                            egui::Color32::from_rgb(100, 116, 139),
+                        );
                     } else {
                         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
                             ui.vertical_centered(|ui| {
@@ -1221,7 +1265,7 @@ impl eframe::App for ImageCompressorApp {
                         });
                     }
 
-                    if response.clicked() && !self.processing {
+                    if response.clicked() && !self.processing && !self.scanning {
                         if let Some(paths) = rfd::FileDialog::new()
                             .add_filter(
                                 "图片文件",
@@ -1277,6 +1321,51 @@ impl eframe::App for ImageCompressorApp {
                                 }
                             });
                         }
+                    }
+
+                    // ===== 文件列表（处理完成后展示，失败项 hover 显示原因） =====
+                    if !self.processing && !self.files.is_empty() {
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(format!("📋 文件列表（{} 个）", self.files.len()))
+                                .size(13.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(30, 41, 59)),
+                        );
+                        ui.add_space(4.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(220.0)
+                            .show(ui, |ui| {
+                                for item in &self.files {
+                                    let name = item
+                                        .path
+                                        .file_name()
+                                        .map(|s| s.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| item.path.to_string_lossy().to_string());
+                                    let (icon, color) = if !item.processed {
+                                        ("⏳", egui::Color32::GRAY)
+                                    } else if item.success {
+                                        ("✅", egui::Color32::from_rgb(22, 163, 74))
+                                    } else {
+                                        ("❌", egui::Color32::from_rgb(220, 38, 38))
+                                    };
+                                    let row = ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(icon).color(color));
+                                        ui.label(
+                                            egui::RichText::new(name)
+                                                .size(12.0)
+                                                .color(egui::Color32::from_rgb(30, 41, 59)),
+                                        );
+                                    });
+                                    if let Some(err) = &item.error {
+                                        row.response.on_hover_text(format!(
+                                            "处理失败原因：{}",
+                                            err
+                                        ));
+                                    }
+                                }
+                            });
                     }
 
                     ui.add_space(10.0);
@@ -1371,4 +1460,45 @@ pub(crate) fn run_gui() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("GUI error: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod smoke_tests {
+    use xtap_compress::AppConfig;
+
+    /// P3：GUI 配置序列化回归测试（headless，无需 GPU/显示）。
+    /// 验证「保持原文件名 + 导出目录」两字段能正确序列化并在往返后保留——
+    /// 这正是 GUI 勾选「保持原文件名」后依赖的契约，防止字段被
+    /// `#[serde(skip)]` 或后续重构误删导致导出目录静默丢失。
+    ///
+    /// 注：eframe 无 headless 启动器（需 GPU/显示），故「启动 app」环节由
+    /// `cargo check --features "gui,cli"`（编译整 GUI） + 本序列化契约共同守护。
+    #[test]
+    fn config_custom_output_dir_roundtrip() {
+        let cfg = xtap_compress::AppConfig {
+            keep_original_name: true,
+            custom_output_dir: Some("/tmp/星TAP导出测试".to_string()),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&cfg).expect("AppConfig 应可序列化");
+        // 字段确实被序列化进 JSON（而非被 skip）
+        assert!(
+            json.contains("custom_output_dir"),
+            "序列化结果应含 custom_output_dir 字段，实际：{}",
+            json
+        );
+        assert!(
+            json.contains("keep_original_name"),
+            "序列化结果应含 keep_original_name 字段"
+        );
+
+        let back: AppConfig = serde_json::from_str(&json).expect("AppConfig 应可反序列化");
+        assert!(back.keep_original_name, "keep_original_name 应保留");
+        assert_eq!(
+            back.custom_output_dir.as_deref(),
+            Some("/tmp/星TAP导出测试"),
+            "custom_output_dir 应保留"
+        );
+    }
 }
