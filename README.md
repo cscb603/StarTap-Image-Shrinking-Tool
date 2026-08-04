@@ -76,10 +76,23 @@ The compression core is published as a Rust crate **`xtap-compress`** ([crates.i
 
 ```rust
 // Library usage (xtap-compress)
-use xtap_compress::{AppConfig, Processor};
-let app = AppConfig { usage_mode: "social".into(), ..Default::default() };
-let cfg = app_config_to_process_config(&app);
-Processor::new(cfg).process_paths(&["photo.jpg"]);
+use xtap_compress::{AppConfig, Processor, app_config_to_process_config};
+use std::path::Path;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // AppConfig derives Default — set only what you need
+    let app = AppConfig {
+        usage_mode: "social".into(),   // social | archive | custom
+        platform: "wechat".into(),     // wechat | xiaohongshu | instagram | general
+        ..Default::default()
+    };
+    // 2nd arg = output dir (None → saved next to the source file)
+    let config = app_config_to_process_config(&app, None);
+    let proc = Processor::new(config);
+    let out = proc.process_image(Path::new("photo.jpg"))?;
+    println!("saved: {}", out.display());
+    Ok(())
+}
 ```
 
 ---
@@ -160,10 +173,23 @@ echo '{"files":["C:/照片/a.jpg","C:/照片/b.jpg"],"platform":"wechat","qualit
 
 ```rust
 // 库调用示例（xtap-compress）
-use xtap_compress::{AppConfig, Processor};
-let app = AppConfig { usage_mode: "social".into(), ..Default::default() };
-let cfg = app_config_to_process_config(&app);
-Processor::new(cfg).process_paths(&["photo.jpg"]);
+use xtap_compress::{AppConfig, Processor, app_config_to_process_config};
+use std::path::Path;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // AppConfig 实现了 Default——只改你要的字段
+    let app = AppConfig {
+        usage_mode: "social".into(),   // social | archive | custom
+        platform: "wechat".into(),     // wechat | xiaohongshu | instagram | general
+        ..Default::default()
+    };
+    // 第 2 个参数是输出目录（None = 保存到原文件旁边）
+    let config = app_config_to_process_config(&app, None);
+    let proc = Processor::new(config);
+    let out = proc.process_image(Path::new("photo.jpg"))?;
+    println!("已保存: {}", out.display());
+    Ok(())
+}
 ```
 
 ---
