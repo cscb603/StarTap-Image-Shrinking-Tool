@@ -1,10 +1,10 @@
 [package]
 name = "xtap-compress"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.75"
 authors = ["星 TAP 实验室 <cscb603@qq.com>"]
-description = "Multi-platform scene-aware image compression engine: chat/social/archive adaptive compression for JPEG/PNG/WebP with perceptual quality and CAS sharpening"
+description = "StarTAP多平台场景感知图像压缩引擎 / Multi-platform scene-aware image compression: chat/social/archive adaptive modes for JPEG/PNG/WebP. 星TAP实验室出品。"
 license = "MIT"
 documentation = "https://docs.rs/xtap-compress"
 repository = "https://github.com/cscb603/xTap-compress"
